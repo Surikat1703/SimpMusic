@@ -56,12 +56,19 @@ jobs:
           AS="/usr/local/lib/android/sdk/build-tools/$BT/apksigner"
           APK=$(ls androidApp/build/outputs/apk/release/*.apk | head -n 1)
           echo "Signing $APK with build-tools $BT"
-          keytool -genkeypair -v -keystore fork.keystore -storepass android -keypass android \
-            -alias fork -keyalg RSA -keysize 2048 -validity 10950 -dname "CN=SimpMusic Fork"
+          # A PERMANENT keystore, kept in repository secrets. It used to be generated per run, which
+          # made every release signed by a different key — so no build could ever update over the one
+          # before it. Do not replace it with an ephemeral key again: losing or rotating this key
+          # means the next release can only be installed after a full uninstall.
+          echo "${{ secrets.FORK_KEYSTORE_B64 }}" | base64 -d > fork.keystore
           "$ZA" -v 4 "$APK" aligned.apk
-          "$AS" sign --ks fork.keystore --ks-pass pass:android --key-pass pass:android \
-            --ks-key-alias fork --out SimpMusic-FOSS-arm64.apk aligned.apk
+          "$AS" sign --ks fork.keystore \
+            --ks-pass pass:${{ secrets.FORK_KEYSTORE_PASSWORD }} \
+            --key-pass pass:${{ secrets.FORK_KEY_PASSWORD }} \
+            --ks-key-alias ${{ secrets.FORK_KEY_ALIAS }} \
+            --out SimpMusic-FOSS-arm64.apk aligned.apk
           "$AS" verify --verbose SimpMusic-FOSS-arm64.apk
+          "$AS" verify --print-certs SimpMusic-FOSS-arm64.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
