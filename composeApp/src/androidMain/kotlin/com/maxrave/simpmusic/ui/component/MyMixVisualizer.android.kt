@@ -135,7 +135,7 @@ private fun MyMixShaderField(
         }
     }
 
-    androidx.compose.foundation.Canvas(
+    androidx.compose.foundation.layout.Box(
         modifier = modifier.drawWithCache {
             onDrawBehind {
                 val level = energy
@@ -162,7 +162,7 @@ private fun MyMixShaderField(
                     canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
                 }
             }
-        },
+        }
     )
 }
 
