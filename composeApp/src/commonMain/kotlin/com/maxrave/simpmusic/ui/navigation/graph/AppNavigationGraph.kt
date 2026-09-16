@@ -82,6 +82,7 @@ fun AppNavigationGraph(
                 innerPadding = innerPadding,
                 navController = navController,
                 onScrolling = onScrolling,
+                onOpenNowPlaying = showNowPlayingSheet,
             )
         }
         // The original "Mix for you" grid, now reached from the My Mix tab's header button.

@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -70,6 +71,7 @@ import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.simpmusic.extension.getStringBlocking
 import com.maxrave.simpmusic.ui.component.MyMixWave
+import com.maxrave.simpmusic.ui.component.QueueBottomSheet
 import com.maxrave.simpmusic.ui.icon.Add
 import com.maxrave.simpmusic.ui.icon.Pause
 import com.maxrave.simpmusic.ui.icon.PlayArrow
@@ -134,9 +136,7 @@ import com.maxrave.simpmusic.ui.icon.Close
 import com.maxrave.simpmusic.ui.icon.SkipNext
 import com.maxrave.simpmusic.ui.icon.SkipPrevious
 import com.maxrave.simpmusic.ui.icon.UnfoldMore
-import com.maxrave.simpmusic.ui.icon.VolumeOff
-import com.maxrave.simpmusic.ui.icon.VolumeUp
-import com.maxrave.simpmusic.ui.navigation.destination.player.FullscreenDestination
+import com.maxrave.simpmusic.ui.icon.MoreVert
 import simpmusic.composeapp.generated.resources.my_mix_all_moods
 import kotlin.time.Clock
 
@@ -204,6 +204,9 @@ fun MyMixScreen(
     viewModel: LibraryViewModel = koinViewModel(),
     navController: NavController,
     onScrolling: (onTop: Boolean) -> Unit = {},
+    // The in-tab player opens the ordinary Now Playing screen; the host supplies the callback, since
+    // that screen is a sheet owned by App.kt rather than a destination.
+    onOpenNowPlaying: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val sharedViewModel: SharedViewModel = koinInject()
@@ -396,13 +399,7 @@ fun MyMixScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    0f to fieldColor,
-                    0.42f to fieldColor.copy(alpha = 0.72f),
-                    0.78f to backgroundColor,
-                ),
-            ),
+            .background(Color(0xFF0B0B0F)),
     ) {
         // The wave is the page, not a decoration inside it: it runs under the whole screen and the
         // list scrolls over it.
@@ -415,6 +412,21 @@ fun MyMixScreen(
             // The field answers to the transport, not to this tab's own player: music playing from
             // anywhere lights it up, and pausing anywhere drops it back to grey.
             isPlaying = controllerState.isPlaying,
+        )
+
+        // Only the bottom of the page is scrimmed, and only so the pills and the cache card stay
+        // legible over the field. The field itself is never painted flat.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.55f)
+                .align(Alignment.BottomCenter)
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Transparent,
+                        1f to Color.Black.copy(alpha = 0.55f),
+                    ),
+                ),
         )
 
         LazyColumn(
@@ -432,9 +444,8 @@ fun MyMixScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(470.dp)
                         .padding(top = 14.dp),
-                    verticalArrangement = Arrangement.SpaceBetween,
+                    verticalArrangement = Arrangement.spacedBy(26.dp),
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -464,14 +475,13 @@ fun MyMixScreen(
                             song = nowSong,
                             isPlaying = controllerState.isPlaying,
                             isLiked = controllerState.isLiked,
-                            volume = controllerState.volume,
+                            accent = playingDominant,
                             timeline = timelineState,
-                            onOpenFullPlayer = { navController.navigate(FullscreenDestination) },
+                            onOpenPlayer = onOpenNowPlaying,
                             onToggleLike = { sharedViewModel.onUIEvent(UIEvent.ToggleLike) },
                             onPlayPause = { sharedViewModel.onUIEvent(UIEvent.PlayPause) },
                             onNext = { sharedViewModel.onUIEvent(UIEvent.Next) },
                             onPrevious = { sharedViewModel.onUIEvent(UIEvent.Previous) },
-                            onVolume = { sharedViewModel.onUIEvent(UIEvent.UpdateVolume(it)) },
                             onSeek = { sharedViewModel.onUIEvent(UIEvent.UpdateProgress(it)) },
                         )
                     } else {
@@ -503,15 +513,16 @@ fun MyMixScreen(
                         }
                     }
 
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(18.dp),
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
+                }
+            }
+
+            // Fork: the mood row sits outside the hero. Inside it, the player's own height squeezed the
+            // row until its pills were unreadable as soon as playback started.
+            item(key = "my_mix_moods") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                             LazyRow(
                                 modifier = Modifier.weight(1f),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -552,7 +563,18 @@ fun MyMixScreen(
                             }
                         }
 
-                        val startedThisMix = startedMixId != null && startedMixId == heroSourceKey
+                }
+            }
+
+            // The big button starts whatever is selected; it steps aside once that selection is the
+            // thing playing, because the player above carries its own transport.
+            val startedThisMix = startedMixId != null && startedMixId == heroSourceKey
+            if (!startedThisMix) {
+                item(key = "my_mix_play") {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
                         FilledIconButton(
                             onClick = {
                                 when {
@@ -773,14 +795,13 @@ private fun MyMixNowPlaying(
     song: SongEntity,
     isPlaying: Boolean,
     isLiked: Boolean,
-    volume: Float,
+    accent: Color,
     timeline: TimeLine,
-    onOpenFullPlayer: () -> Unit,
+    onOpenPlayer: () -> Unit,
     onToggleLike: () -> Unit,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
-    onVolume: (Float) -> Unit,
     onSeek: (Float) -> Unit,
 ) {
     var isSliding by remember { mutableStateOf(false) }
@@ -808,7 +829,7 @@ private fun MyMixNowPlaying(
                 .size(168.dp)
                 .clip(RoundedCornerShape(16.dp))
                 .background(Color.White.copy(alpha = 0.12f))
-                .clickable { onOpenFullPlayer() },
+                .clickable { onOpenPlayer() },
             contentDescription = song.title,
         )
         Text(
@@ -820,7 +841,7 @@ private fun MyMixNowPlaying(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onOpenFullPlayer() },
+                .clickable { onOpenPlayer() },
         )
         Text(
             text = song.artistName?.connectArtists().orEmpty(),
@@ -831,7 +852,7 @@ private fun MyMixNowPlaying(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onOpenFullPlayer() },
+                .clickable { onOpenPlayer() },
         )
 
         Row(
@@ -839,52 +860,71 @@ private fun MyMixNowPlaying(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            IconButton(onClick = { onVolume(if (volume > 0f) 0f else 1f) }) {
-                Icon(
-                    imageVector = if (volume > 0f) SimpIcons.VolumeUp else SimpIcons.VolumeOff,
-                    contentDescription = null,
-                    tint = Color.White,
-                )
+            // Fork: the progress pill is the bar. It is one translucent tint of the song's own colour
+            // (a single hue, slightly denser where the track has played) with the timestamps inside it,
+            // and the slider on top is fully transparent — it only reads the drag.
+            val progress = if (timeline.total > 0L) {
+                (timeline.current.toFloat() / timeline.total).coerceIn(0f, 1f)
+            } else {
+                0f
             }
             Box(
                 modifier = Modifier
                     .weight(1f)
+                    .height(44.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(Color.White.copy(alpha = 0.18f))
-                    .padding(horizontal = 14.dp, vertical = 2.dp),
+                    .background(accent.copy(alpha = 0.26f)),
+                contentAlignment = Alignment.Center,
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "${formatDuration(timeline.current)} / ${formatDuration(timeline.total)}",
-                        style = typo().bodyMedium,
-                        color = Color.White,
-                    )
-                    Slider(
-                        value = sliderValue,
-                        onValueChange = { value ->
-                            isSliding = true
-                            sliderValue = value
-                        },
-                        onValueChangeFinished = {
-                            isSliding = false
-                            onSeek(sliderValue)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(20.dp),
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color.White,
-                            activeTrackColor = Color.White,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.28f),
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(if (isSliding) sliderValue / 100f else progress)
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(accent.copy(alpha = 0.34f), accent.copy(alpha = 0.62f)),
+                            ),
                         ),
-                    )
-                }
+                )
+                Text(
+                    text = "${formatDuration(timeline.current)} / ${formatDuration(timeline.total)}",
+                    style = typo().bodyMedium,
+                    color = Color.White,
+                )
+                Slider(
+                    value = sliderValue,
+                    onValueChange = { value ->
+                        isSliding = true
+                        sliderValue = value
+                    },
+                    onValueChangeFinished = {
+                        isSliding = false
+                        onSeek(sliderValue)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color.Transparent,
+                        activeTrackColor = Color.Transparent,
+                        inactiveTrackColor = Color.Transparent,
+                    ),
+                )
             }
             HeartCheckBox(
                 checked = isLiked,
                 size = 32,
                 tint = Color.White,
             ) { onToggleLike() }
+            var showQueue by remember { mutableStateOf(false) }
+            IconButton(onClick = { showQueue = true }) {
+                Icon(
+                    imageVector = SimpIcons.MoreVert,
+                    contentDescription = null,
+                    tint = Color.White,
+                )
+            }
+            if (showQueue) {
+                QueueBottomSheet(onDismiss = { showQueue = false })
+            }
         }
 
         Row(
