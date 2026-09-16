@@ -545,6 +545,20 @@
     <string name="mix_for_you">Миксы для вас</string>
     <string name="mix">Микс</string>
     <string name="no_mixes_found">Не найдено миксов</string>
+    <string name="my_mix">Мой микс</string>
+    <string name="my_mix_subtitle">Миксы, собранные по вашим прослушиваниям</string>
+    <string name="my_mix_play">Слушать</string>
+    <string name="my_mix_preparing">Подготовка…</string>
+    <string name="my_mix_mood">Настроение</string>
+    <string name="my_mix_no_mood">Без настроения</string>
+    <string name="my_mix_all_mixes">Все миксы</string>
+    <string name="my_mix_auto_cache">Автокэш моего микса</string>
+    <string name="my_mix_auto_cache_desc">Держать микс скачанным для офлайн-прослушивания</string>
+    <string name="my_mix_cache_count">Треков в кэше</string>
+    <string name="my_mix_cache_interval">Обновлять каждые (дней)</string>
+    <string name="my_mix_cache_now">Обновить кэш сейчас</string>
+    <string name="my_mix_open_original">Открыть «Миксы для вас»</string>
+    <string name="my_mix_empty">Нет доступных миксов. Войдите в YouTube Music.</string>
     <string name="no_charts_found">Чарты не найдены</string>
     <string name="desktop_webview_description">В связи с ограничениями Compose Multiplatform, WebView невозможно реализовать на настольных устройствах.\n
 Ознакомьтесь с этим руководством, чтобы узнать, как выполнить вход на настольной версии:\n</string>

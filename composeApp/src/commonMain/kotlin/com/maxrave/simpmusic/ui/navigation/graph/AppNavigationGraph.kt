@@ -17,13 +17,15 @@ import com.maxrave.simpmusic.ui.navigation.destination.home.WrappedDestination
 import com.maxrave.simpmusic.ui.theme.ForceDarkContent
 import com.maxrave.simpmusic.ui.navigation.destination.library.LibraryDestination
 import com.maxrave.simpmusic.ui.navigation.destination.library.MixForYouDestination
+import com.maxrave.simpmusic.ui.navigation.destination.library.MixForYouOriginalDestination
 import com.maxrave.simpmusic.ui.navigation.destination.player.FullscreenDestination
 import com.maxrave.simpmusic.ui.navigation.destination.search.SearchDestination
 import com.maxrave.simpmusic.ui.screen.home.HomeScreen
 import com.maxrave.simpmusic.ui.screen.home.analytics.AnalyticsScreen
 import com.maxrave.simpmusic.ui.screen.home.wrapped.WrappedScreen
 import com.maxrave.simpmusic.ui.screen.library.LibraryScreen
-import com.maxrave.simpmusic.ui.screen.library.MixForYouScreen
+import com.maxrave.simpmusic.ui.screen.library.MixForYouOriginalScreen
+import com.maxrave.simpmusic.ui.screen.library.MyMixScreen
 import com.maxrave.simpmusic.ui.screen.other.SearchScreen
 import com.maxrave.simpmusic.ui.screen.player.FullscreenPlayer
 
@@ -76,7 +78,15 @@ fun AppNavigationGraph(
         }
         // Only reachable as a tab while signed in to YouTube
         composable<MixForYouDestination> {
-            MixForYouScreen(
+            MyMixScreen(
+                innerPadding = innerPadding,
+                navController = navController,
+                onScrolling = onScrolling,
+            )
+        }
+        // The original "Mix for you" grid, now reached from the My Mix tab's header button.
+        composable<MixForYouOriginalDestination> {
+            MixForYouOriginalScreen(
                 innerPadding = innerPadding,
                 navController = navController,
                 onScrolling = onScrolling,

@@ -71,12 +71,14 @@ import simpmusic.composeapp.generated.resources.no_mixes_found
  * mixes stay fetched once and the grid, its pull-to-refresh and its empty state behave exactly as
  * they did while this was a chip.
  *
- * The tab is hidden while signed out (see `App.kt`), which is what the chip did too — YouTube has
- * no mixes to give an anonymous session.
+ * It is hidden while signed out (see `App.kt`) — YouTube has no mixes to give an anonymous
+ * session. **Fork:** the tab itself now hosts [MyMixScreen]; this screen kept its file path (and
+ * therefore a one-line diff against upstream) and is reached from that tab's header button via
+ * `MixForYouOriginalDestination`.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
 @Composable
-fun MixForYouScreen(
+fun MixForYouOriginalScreen(
     innerPadding: PaddingValues,
     viewModel: LibraryViewModel = koinViewModel(),
     navController: NavController,
