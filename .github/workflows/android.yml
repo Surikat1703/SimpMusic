@@ -1,9 +1,11 @@
-name: Build release APK (FOSS)
+name: Build fork APK (FOSS, arm64)
+
 on:
   workflow_dispatch:
   push:
     branches:
       - 'dev'
+      - 'main'
     paths-ignore:
       - 'README.md'
       - 'fastlane/**'
@@ -11,15 +13,9 @@ on:
       - '.github/**/*.md'
       - '.github/FUNDING.yml'
       - '.github/ISSUE_TEMPLATE/**'
-  pull_request:
-    branches: [ dev ]
-    paths-ignore:
-      - 'README.md'
-      - 'fastlane/**'
-      - 'assets/**'
-      - '.github/**/*.md'
-      - '.github/FUNDING.yml'
-      - '.github/ISSUE_TEMPLATE/**'
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -36,26 +32,15 @@ jobs:
           distribution: "microsoft"
           cache: 'gradle'
 
-      - name: Update build product flavor
+      - name: Force FOSS build
         run: |
-          echo "" >> ./gradle.properties
-          echo "isFullBuild=true" >> ./gradle.properties
+          sed -i 's/^isFullBuild=.*/isFullBuild=false/' ./gradle.properties
+          grep -q '^isFullBuild=' ./gradle.properties || echo 'isFullBuild=false' >> ./gradle.properties
+          grep '^isFullBuild=' ./gradle.properties
 
-      - name: Update Sentry Secrets
-        env:
-          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-        run: |
-          echo 'SENTRY_DSN=${{ secrets.SENTRY_DSN }}' > ./local.properties
-          echo "SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}" >> ./local.properties
-
-      - name: Update Last.fm secrets
-        env:
-          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
-          LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
-        run: |
-          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" >> ./local.properties
-          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> ./local.properties
+      - name: Read version
+        id: ver
+        run: echo "name=$(grep '^version-name' gradle/libs.versions.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
 
       - name: Generate aboutLibraries.json
         run: ./gradlew exportLibraryDefinitions
@@ -63,27 +48,34 @@ jobs:
       - name: Build release APK
         run: ./gradlew androidApp:assembleRelease
 
-      - name: Check build-tools version
-        shell: bash
+      - name: Sign APK
         run: |
-          BUILD_TOOL_VERSION=$(ls /usr/local/lib/android/sdk/build-tools/ | tail -n 1)
-          echo "BUILD_TOOL_VERSION=$BUILD_TOOL_VERSION" >> $GITHUB_ENV
-          echo Last build tool version is: $BUILD_TOOL_VERSION
+          set -e
+          BT=$(ls /usr/local/lib/android/sdk/build-tools/ | sort -V | tail -n 1)
+          ZA="/usr/local/lib/android/sdk/build-tools/$BT/zipalign"
+          AS="/usr/local/lib/android/sdk/build-tools/$BT/apksigner"
+          APK=$(ls androidApp/build/outputs/apk/release/*.apk | head -n 1)
+          echo "Signing $APK with build-tools $BT"
+          keytool -genkeypair -v -keystore fork.keystore -storepass android -keypass android \
+            -alias fork -keyalg RSA -keysize 2048 -validity 10950 -dname "CN=SimpMusic Fork"
+          "$ZA" -v 4 "$APK" aligned.apk
+          "$AS" sign --ks fork.keystore --ks-pass pass:android --key-pass pass:android \
+            --ks-key-alias fork --out SimpMusic-FOSS-arm64.apk aligned.apk
+          "$AS" verify --verbose SimpMusic-FOSS-arm64.apk
 
-      - uses: kevin-david/zipalign-sign-android-release@v2
-        id: sign_app
-        with:
-          releaseDirectory: androidApp/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
-          alias: ${{ secrets.ALIAS }}
-          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
-          keyPassword: ${{ secrets.KEY_PASSWORD }}
-          zipAlign: true
-        env:
-            BUILD_TOOLS_VERSION: ${{ env.BUILD_TOOL_VERSION }}
-
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app
-          path: androidApp/build/outputs/apk/release/*-signed.apk
+          name: SimpMusic-FOSS-arm64
+          path: SimpMusic-FOSS-arm64.apk
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: fork-v${{ steps.ver.outputs.name }}-${{ github.run_number }}
+          name: SimpMusic FOSS ${{ steps.ver.outputs.name }} (fork build ${{ github.run_number }})
+          body: |
+            FOSS build, arm64-v8a only.
+            Upstream version: ${{ steps.ver.outputs.name }}
+            Commit: ${{ github.sha }}
+          files: SimpMusic-FOSS-arm64.apk

@@ -19,16 +19,6 @@ name: Build desktop packages (cross-OS via Conveyor)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - 'dev'
-    paths-ignore:
-      - 'README.md'
-      - 'fastlane/**'
-      - 'assets/**'
-      - '.github/**/*.md'
-      - '.github/FUNDING.yml'
-      - '.github/ISSUE_TEMPLATE/**'
 
 permissions:
   contents: write

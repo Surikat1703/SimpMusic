@@ -301,9 +301,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkForUpdate() {
-        if (viewModel.shouldCheckForUpdate()) {
-            viewModel.checkForUpdate()
-        }
+        // Fork: upstream's update checker targets maxrave-dev/SimpMusic, so it is disabled here.
     }
 
     private fun putString(
