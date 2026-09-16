@@ -70,6 +70,7 @@ import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.simpmusic.extension.getStringBlocking
 import com.maxrave.simpmusic.ui.component.MyMixWave
 import com.maxrave.simpmusic.ui.icon.Add
+import com.maxrave.simpmusic.ui.icon.Pause
 import com.maxrave.simpmusic.ui.icon.PlayArrow
 import com.maxrave.simpmusic.ui.icon.Remove
 import com.maxrave.simpmusic.ui.icon.Sensors
@@ -78,6 +79,7 @@ import com.maxrave.simpmusic.ui.navigation.destination.library.MixForYouOriginal
 import com.maxrave.simpmusic.ui.theme.typo
 import com.maxrave.simpmusic.viewModel.LibraryViewModel
 import com.maxrave.simpmusic.viewModel.SharedViewModel
+import com.maxrave.simpmusic.viewModel.UIEvent
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.http.Url
@@ -150,6 +152,9 @@ fun MyMixScreen(
     val playlistRepository: PlaylistRepository = koinInject()
     val dataStoreManager: DataStoreManager = koinInject()
 
+    // Fork: the field dances to whatever is playing, so the hero follows the transport state.
+    val controllerState by sharedViewModel.controllerState.collectAsStateWithLifecycle()
+
     val mixResource by viewModel.youTubeMixForYou.collectAsStateWithLifecycle()
     val allMixes = mixResource.data.orEmpty()
     val isLoadingMixes = mixResource.data == null && mixResource.message == null
@@ -212,6 +217,11 @@ fun MyMixScreen(
     var isPreparing by remember { mutableStateOf(false) }
     var playFailed by remember { mutableStateOf(false) }
 
+    // The mix this screen last started: it decides whether the big button toggles the transport or
+    // starts the selected mix, and whether the field reacts to the music.
+    var startedMixId by remember { mutableStateOf<String?>(null) }
+    val isSelectedMixPlaying = controllerState.isPlaying && startedMixId == selectedMix?.browseId
+
     fun playMix(mix: PlaylistsResult) {
         if (isPreparing) return
         isPreparing = true
@@ -252,6 +262,7 @@ fun MyMixScreen(
                     ),
                 )
                 sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
+                startedMixId = mix.browseId
             } finally {
                 isPreparing = false
             }
@@ -276,7 +287,8 @@ fun MyMixScreen(
             colorSecondary = waveSecondary,
             modifier = Modifier.fillMaxSize(),
             fullBleed = true,
-            isActive = !isPreparing,
+            isActive = true,
+            isPlaying = isSelectedMixPlaying,
         )
 
         LazyColumn(
@@ -373,10 +385,17 @@ fun MyMixScreen(
                             }
                         }
 
+                        val startedThisMix = startedMixId != null && startedMixId == selectedMix?.browseId
                         FilledIconButton(
-                            onClick = { selectedMix?.let { playMix(it) } },
+                            onClick = {
+                                if (startedThisMix) {
+                                    sharedViewModel.onUIEvent(UIEvent.PlayPause)
+                                } else {
+                                    selectedMix?.let { playMix(it) }
+                                }
+                            },
                             modifier = Modifier.size(84.dp),
-                            enabled = selectedMix != null && !isPreparing,
+                            enabled = !isPreparing && (selectedMix != null || startedThisMix),
                             colors = IconButtonDefaults.filledIconButtonColors(
                                 containerColor = Color.White,
                                 contentColor = Color.Black,
@@ -392,7 +411,7 @@ fun MyMixScreen(
                                 )
                             } else {
                                 Icon(
-                                    imageVector = SimpIcons.PlayArrow,
+                                    imageVector = if (isSelectedMixPlaying) SimpIcons.Pause else SimpIcons.PlayArrow,
                                     contentDescription = stringResource(Res.string.my_mix_play),
                                     modifier = Modifier.size(42.dp),
                                 )
