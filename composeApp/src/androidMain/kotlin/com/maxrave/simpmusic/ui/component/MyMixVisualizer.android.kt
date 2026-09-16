@@ -26,8 +26,12 @@ import kotlin.math.exp
  * Android actual for the My Mix field.
  *
  * On API 33+ this is a runtime AGSL shader ([android.graphics.RuntimeShader]) drawn into the Compose
- * canvas, so the whole picture — noise, warping, the lights, the glow — is computed per pixel on the
- * GPU and nothing is uploaded. Below 33 the same parameters drive [MyMixWave] instead.
+ * canvas, so the whole picture — the simplex-noise deformation, the amplitude ripple, the vignette —
+ * is computed per pixel on the GPU and nothing is uploaded. Below 33 the same parameters drive
+ * [MyMixWave] instead.
+ *
+ * The program is the one `flutter_my_wave/assets/shaders/my_wave.frag` uses, ported to AGSL, so the
+ * field looks the same in both places.
  *
  * The shader is compiled by Skia on the DEVICE, not at build time, so a syntax error would not fail
  * CI: it is wrapped in `runCatching` and the field silently falls back to the Canvas renderer, which
@@ -143,19 +147,27 @@ private fun MyMixShaderField(
                 val grey = Color(0xFF6B6B6B)
                 val hot = vivid(lerp(grey, colorPrimary, level))
                 val cool = vivid(lerp(grey, colorSecondary, level))
-                val third = vivid(lerp(rotateHue(hot), cool, 0.45f))
 
                 val beat = (t * bpm / 60f) % 1f
                 val pulse = (exp(-5.0f * beat) * level).coerceIn(0f, 1f)
 
-                shader.setFloatUniform("uTime", t)
+                // Uniforms match assets/shaders/my_wave.frag one for one: the same program is used on
+                // Flutter and here, so the field looks the same on both.
                 shader.setFloatUniform("uResolution", size.width, size.height)
-                shader.setFloatUniform("uSpeed", 0.20f + 0.80f * level)
-                shader.setFloatUniform("uAmplitude", amplitude.coerceIn(0f, 1f) * intensity)
-                shader.setFloatUniform("uBass", (pulse + bass.coerceIn(0f, 1f) * level).coerceIn(0f, 1.5f))
+                shader.setFloatUniform("uTime", t)
+                // 120 BPM is the neutral speed the shader was written around; a paused track slows it
+                // down instead of freezing, which is what keeps the field alive behind a stopped song.
+                shader.setFloatUniform("uBpmSpeed", (bpm.coerceAtLeast(1f) / 120f) * (0.55f + 0.45f * level))
+                shader.setFloatUniform(
+                    "uAmplitude",
+                    (
+                        amplitude.coerceIn(0f, 1f) * level * 0.75f +
+                            pulse * 0.25f +
+                            bass.coerceIn(0f, 1f) * level * 0.25f
+                        ).coerceIn(0f, 1f) * intensity,
+                )
                 shader.setFloatUniform("uColor1", hot.red, hot.green, hot.blue)
                 shader.setFloatUniform("uColor2", cool.red, cool.green, cool.blue)
-                shader.setFloatUniform("uColor3", third.red, third.green, third.blue)
 
                 paint.shader = shader
                 drawIntoCanvas { canvas ->
@@ -186,122 +198,82 @@ private fun vivid(color: Color): Color {
     return Color(android.graphics.Color.HSVToColor(hsv))
 }
 
-/** Rotates the colour channels: a cheap, saturated hue shift with no colour-space maths. */
-private fun rotateHue(color: Color): Color = Color(
-    red = color.blue,
-    green = color.red,
-    blue = color.green,
-    alpha = 1f,
-)
-
 /**
- * The AGSL program. Written for SkSL, which is a restricted GLSL: no preprocessor, no arrays, no
- * swizzle assignment, no uniform structs. Everything in here is plain arithmetic and `mix`/`fract`/
- * `sin`/`pow` on floats, which is the subset Skia is guaranteed to accept.
+ * The AGSL program — the same shader that ships as `flutter_my_wave/assets/shaders/my_wave.frag`,
+ * ported from GLSL ES to AGSL. The maths is untouched: simplex noise deforms the field, the second
+ * octave is fed the first one, `uAmplitude` adds a travelling ripple, the two colours are mixed by
+ * that field and a vignette darkens the edges.
  *
- * The picture: gradient noise warped into itself twice (the "liquid"), then six large lights placed
- * along the warp and ADDED together. The addition is the whole effect — where lights overlap the
- * colour climbs and eventually reads as white-hot, while a single light stays a soft coloured haze.
- * A Reinhard tonemap (`c / (1 + c)`) at the end is what keeps the overlap saturated instead of a flat
- * blown-out white.
+ * Only three mechanical changes were made, none of which affect the result:
+ *  - the entry point is `half4 main(float2 fragCoord)` on `fragCoord` instead of `void main()` on
+ *    `FlutterFragCoord()`;
+ *  - `#include <flutter/runtime_effect.glsl>` and the `out` variable are gone — AGSL has neither;
+ *  - the two vector swizzle assignments (`x12.xy -= i1`, `g.yz = …`) are written as whole-value
+ *    assignments, because SkSL is a restricted GLSL and a rejected program would silently fall back
+ *    to the Canvas renderer on the device.
  */
 private object MyMixShader {
     const val AGSL = """
-uniform float uTime;
-uniform float uSpeed;
-uniform float uAmplitude;
-uniform float uBass;
 uniform float2 uResolution;
+uniform float uTime;
+uniform float uBpmSpeed;
+uniform float uAmplitude;
 uniform float3 uColor1;
 uniform float3 uColor2;
-uniform float3 uColor3;
 
-float hash21(float2 p) {
-    float2 q = fract(p * float2(127.1, 311.7));
-    q = q + dot(q, q + 34.23);
-    return fract(q.x * q.y);
-}
+// Simplex noise function
+float3 permute(float3 x) { return mod(((x * 34.0) + 1.0) * x, 289.0); }
 
-float noise(float2 p) {
-    float2 i = floor(p);
-    float2 f = fract(p);
-    float2 u = f * f * (3.0 - 2.0 * f);
-    float a = hash21(i);
-    float b = hash21(i + float2(1.0, 0.0));
-    float c = hash21(i + float2(0.0, 1.0));
-    float d = hash21(i + float2(1.0, 1.0));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
-
-float fbm(float2 p) {
-    float v = 0.0;
-    float a = 0.5;
-    v = v + a * noise(p);
-    p = p * 2.03;
-    a = a * 0.5;
-    v = v + a * noise(p);
-    p = p * 2.03;
-    a = a * 0.5;
-    v = v + a * noise(p);
-    p = p * 2.03;
-    a = a * 0.5;
-    v = v + a * noise(p);
-    return v;
-}
-
-float light(float2 p, float2 c, float r) {
-    float2 d = p - c;
-    return r / (0.03 + dot(d, d));
+float snoise(float2 v) {
+    float4 C = float4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+    float2 i = floor(v + dot(v, C.yy));
+    float2 x0 = v - i + dot(i, C.xx);
+    float2 i1;
+    if (x0.x > x0.y) {
+        i1 = float2(1.0, 0.0);
+    } else {
+        i1 = float2(0.0, 1.0);
+    }
+    float4 x12 = x0.xyxy + C.xxzz;
+    x12 = float4(x12.xy - i1, x12.zw);
+    i = mod(i, 289.0);
+    float3 p = permute(permute(i.y + float3(0.0, i1.y, 1.0)) + i.x + float3(0.0, i1.x, 1.0));
+    float3 m = max(0.5 - float3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
+    m = m * m;
+    m = m * m;
+    float3 x = 2.0 * fract(p * C.www) - 1.0;
+    float3 h = abs(x) - 0.5;
+    float3 ox = floor(x + 0.5);
+    float3 a0 = x - ox;
+    m = m * (1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h));
+    float3 g;
+    float2 gyz = a0.yz * x12.xz + h.yz * x12.yw;
+    g = float3(a0.x * x0.x + h.x * x0.y, gyz.x, gyz.y);
+    return 130.0 * dot(m, g);
 }
 
 half4 main(float2 fragCoord) {
     float2 res = max(uResolution, float2(1.0, 1.0));
-    float aspect = res.x / res.y;
     float2 uv = fragCoord / res;
-    float2 p = (uv - 0.5) * float2(aspect, 1.0);
 
-    float t = uTime * uSpeed;
-    float amp = clamp(uAmplitude, 0.0, 1.0);
-    float bass = clamp(uBass, 0.0, 1.5);
+    // Animation time, scaled by the BPM
+    float t = uTime * 0.3 * uBpmSpeed;
 
-    // The liquid: the coordinate is warped by noise, then the warped coordinate is warped again.
-    float w1 = fbm(p * 1.5 + float2(t * 0.11, -t * 0.07));
-    float w2 = fbm(p * 2.3 - float2(t * 0.06, t * 0.09) + w1);
-    float2 q = p + float2(w2 - 0.5, w1 - 0.5) * (0.42 + 0.30 * bass + 0.10 * amp);
+    // Deformation from noise and bass
+    float noise1 = snoise(uv * 2.0 + float2(t * 0.5, t * 0.3));
+    float noise2 = snoise(uv * 3.0 - float2(t * 0.2, noise1));
 
-    // Six lights drifting on their own orbits, pushed outward by the beat.
-    float spread = 1.0 + 0.16 * bass;
-    float2 l0 = float2(sin(t * 0.33) * 0.46, cos(t * 0.26) * 0.34) * spread;
-    float2 l1 = float2(cos(t * 0.21 + 1.7) * 0.58, sin(t * 0.30 + 0.6) * 0.44) * spread;
-    float2 l2 = float2(sin(t * 0.17 + 3.1) * 0.36, cos(t * 0.39 + 2.2) * 0.50) * spread;
-    float2 l3 = float2(cos(t * 0.27 + 4.4) * 0.52, sin(t * 0.15 + 5.1) * 0.28) * spread;
-    float2 l4 = float2(sin(t * 0.12 + 2.6) * 0.30, cos(t * 0.35 + 1.1) * 0.54) * spread;
-    float2 l5 = float2(cos(t * 0.25 + 0.4) * 0.62, sin(t * 0.19 + 3.7) * 0.38) * spread;
+    // Pulse from the amplitude (loudness)
+    float wave = noise2 + (uAmplitude * 0.3 * sin(uv.x * 10.0 + t * 5.0));
 
-    float r = (0.20 + 0.14 * bass + 0.06 * amp) / (0.9 + 0.4 * aspect);
+    // Colour mixing
+    float3 color = mix(uColor1, uColor2, clamp(wave + 0.5, 0.0, 1.0));
 
-    float3 col = float3(0.024, 0.026, 0.040);
-    col = col + uColor1 * light(q, l0, r) * 0.70;
-    col = col + uColor2 * light(q, l1, r * 0.9) * 0.66;
-    col = col + uColor3 * light(q, l2, r * 1.1) * 0.60;
-    col = col + uColor1 * light(q, l3, r * 0.8) * 0.54;
-    col = col + uColor2 * light(q, l4, r * 1.2) * 0.50;
-    col = col + uColor3 * light(q, l5, r * 0.7) * 0.58;
+    // Edge darkening (vignette)
+    float vignette = uv.x * (1.0 - uv.x) * uv.y * (1.0 - uv.y) * 15.0;
+    vignette = clamp(pow(vignette, 0.5), 0.0, 1.0);
 
-    // Local density: the same noise that warped the field also decides where it is thicker, so the
-    // glow has structure instead of being six perfectly round blobs.
-    float density = 0.62 + 0.70 * fbm(q * 1.7 + float2(-t * 0.05, t * 0.04));
-    col = col * density;
-
-    // Reinhard tonemap, then a gentle gain: overlap saturates towards white without clipping flat.
-    col = col / (1.0 + col);
-    col = col * 2.25;
-
-    float2 vc = p * float2(0.85, 1.0);
-    col = col * (1.0 - 0.55 * dot(vc, vc));
-    col = max(col, float3(0.0, 0.0, 0.0));
-
-    return half4(col, 1.0);
+    return half4(color * vignette, 1.0);
 }
 """
 }

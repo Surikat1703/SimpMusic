@@ -1,0 +1,25 @@
+name: flutter_my_wave
+description: "My Wave" animated background for Flutter, driven by a fragment shader (RuntimeEffect).
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+
+  # STEP 2: the fragment shader is declared here so that FragmentProgram.fromAsset()
+  # can load it. The path is relative to this pubspec.yaml.
+  shaders:
+    - assets/shaders/my_wave.frag
