@@ -13,6 +13,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
@@ -24,25 +25,24 @@ import kotlin.math.max
 import kotlin.math.sin
 
 /**
- * The My Mix field: a shapeless, many-coloured cloud of light.
+ * The My Mix field: a liquid, glowing, many-coloured gradient.
  *
- * It is nine soft radial lobes of different sizes orbiting on their own paths. They overlap far more
- * than they are wide, which is what removes every edge — the union has no outline and no obvious
- * centre, and it keeps deforming because no two lobes move at the same speed or in the same
- * direction. `Modifier.blur` is deliberately NOT used: it is a no-op below Android 12, and the
- * softness has to look identical everywhere, so it comes from the gradients falling to transparent
- * inside each lobe instead.
+ * This is the fallback renderer — the Android build uses the AGSL shader in
+ * [MyMixVisualizer] on API 33+, and Desktop uses this one. Both take the same parameters and aim for
+ * the same picture, so the field looks like one product on every device.
  *
- * Colour is derived from the artwork colour and the app accent, then pushed apart into six saturated
- * variants by rotating the colour channels, so the field is genuinely multicoloured rather than one
- * tint drawn at several alphas.
+ * The look is built the way the shader builds it: a near-black ground, then a handful of large,
+ * soft lights ADDED together (BlendMode.Plus). Addition is what makes it read as light instead of as
+ * paint — overlaps climb towards white where three lights meet, and every edge stays soft because
+ * each light falls off inside its own gradient. The lights drift on their own orbits at their own
+ * speeds, so the shape keeps dissolving; and because the phase comes from an accumulating clock it
+ * never wraps and never restarts.
  *
- * Playback drives it: a beat spikes the size and brightness of everything and pushes the lobes
- * outward (96 BPM by default), while a paused field is grey, dim and crawling — both sides of that
- * are continuous in the level, so starting or stopping never cuts.
+ * A beat (96 BPM by default) swells the lights and pushes them outward; a paused field falls back to
+ * grey and slows almost to a stop, both continuously, so play/pause never snaps.
  *
- * The clock accumulates from the frame callback and is never wrapped, so there is no cycle to
- * restart.
+ * `Modifier.blur` is deliberately not used: it is a no-op below Android 12 and the softness has to be
+ * identical everywhere, so it comes from the gradient falloff instead.
  */
 @Composable
 fun MyMixWave(
@@ -77,85 +77,71 @@ fun MyMixWave(
         val level = energy
         val grey = Color(0xFF6B6B6B)
 
-        // Fork: paused means grey and nearly still, playing means fully saturated — and both are
-        // reached continuously, so play/pause never snaps the field.
-        val base = lerp(grey, colorPrimary, level)
-        val accent = lerp(grey, colorSecondary, level)
-        val baseRot = rotateChannels(base)
-        val accentRot = rotateChannels(accent)
-        val palette = listOf(
-            base,
-            lerp(base, baseRot, 0.75f * level + 0.25f),
-            lerp(baseRot, accent, 0.5f),
-            accent,
-            lerp(accent, accentRot, 0.75f * level + 0.25f),
-            lerp(accentRot, base, 0.5f),
-        )
+        // Fork: paused means grey and nearly still, playing means fully saturated, and both are reached
+        // continuously so the field never jumps between the two.
+        val hot = lerp(grey, colorPrimary, level)
+        val cool = lerp(grey, colorSecondary, level)
+        val third = lerp(rotateChannels(hot), cool, 0.45f)
+        val fourth = lerp(rotateChannels(cool), hot, 0.45f)
 
-        val center = if (fullBleed) {
-            Offset(this.size.width / 2f, this.size.height * 0.30f)
-        } else {
-            Offset(this.size.width / 2f, this.size.height / 2f)
-        }
-        val radius = if (fullBleed) {
-            max(this.size.width, this.size.height) * 0.62f
-        } else {
-            minOf(this.size.width, this.size.height) / 2f
-        }
+        val width = this.size.width
+        val height = this.size.height
+        val center = if (fullBleed) Offset(width / 2f, height * 0.34f) else Offset(width / 2f, height / 2f)
+        val radius = if (fullBleed) max(width, height) * 0.62f else minOf(width, height) / 2f
 
-        // A beat, not a loop: one spike that decays, gone the instant the music is.
         val beat = (t * bpm / 60f) % 1f
-        val pulse = exp(-5.5f * beat) * level
+        val pulse = exp(-5.0f * beat) * level
+        val motion = 0.20f + 0.80f * level
+        val breath = 1f + 0.06f * sin(t * 0.62f) * idle + 0.10f * pulse
 
-        // Motion collapses to a crawl while paused.
-        val motion = 0.18f + 0.82f * level
+        // A near-black ground the light is added onto.
+        drawRect(color = Color(0xFF06060A))
 
-        // orbit, direction/speed, size, vertical bias, phase, palette index
-        val lobes = listOf(
-            floatArrayOf(0.34f, 0.19f, 0.86f, 0.70f, 0.00f, 0f),
-            floatArrayOf(0.46f, -0.14f, 0.70f, 0.95f, 1.10f, 1f),
-            floatArrayOf(0.27f, 0.25f, 0.62f, 0.55f, 2.20f, 2f),
-            floatArrayOf(0.40f, 0.10f, 0.80f, 0.80f, 3.30f, 3f),
-            floatArrayOf(0.22f, -0.21f, 0.54f, 0.45f, 4.40f, 4f),
-            floatArrayOf(0.50f, 0.16f, 0.66f, 1.00f, 5.50f, 5f),
-            floatArrayOf(0.31f, -0.08f, 0.90f, 0.65f, 0.70f, 1f),
-            floatArrayOf(0.18f, 0.28f, 0.48f, 0.40f, 1.80f, 2f),
-            floatArrayOf(0.43f, -0.17f, 0.58f, 0.85f, 2.90f, 4f),
+        // orbit, speed, size, vertical bias, phase, colour
+        val lights = listOf(
+            floatArrayOf(0.42f, 0.23f, 1.05f, 0.75f, 0.00f, 0f),
+            floatArrayOf(0.55f, -0.16f, 0.88f, 1.05f, 1.90f, 1f),
+            floatArrayOf(0.30f, 0.31f, 0.95f, 0.62f, 3.40f, 2f),
+            floatArrayOf(0.62f, 0.11f, 0.72f, 0.90f, 4.70f, 3f),
+            floatArrayOf(0.24f, -0.27f, 1.15f, 0.55f, 0.90f, 1f),
+            floatArrayOf(0.48f, 0.19f, 0.66f, 1.10f, 2.60f, 2f),
         )
+        val palette = listOf(hot, cool, third, fourth)
 
-        lobes.forEach { lobe ->
-            val orbit = lobe[0]
-            val speed = lobe[1]
-            val lobeSize = lobe[2]
-            val vBias = lobe[3]
-            val phase = lobe[4]
-            val lobeColor = palette[lobe[5].toInt() % palette.size]
+        lights.forEach { light ->
+            val orbit = light[0]
+            val speed = light[1]
+            val lightSize = light[2]
+            val vBias = light[3]
+            val phase = light[4]
+            val color = palette[light[5].toInt() % palette.size]
 
             val angle = t * speed * motion + phase
-            val spread = 1f + 0.10f * pulse
-            val lobeCenter = Offset(
+            val spread = 1f + 0.14f * pulse
+            val lightCenter = Offset(
                 x = center.x + cos(angle) * radius * orbit * spread,
-                y = center.y + sin(angle * 0.83f + phase) * radius * orbit * vBias * spread,
+                y = center.y + sin(angle * 0.79f + phase) * radius * orbit * vBias * spread,
             )
-            val lobeRadius = radius * lobeSize * (0.90f + 0.34f * pulse) * (0.96f + 0.04f * level)
+            val lightRadius = radius * lightSize * breath * (0.95f + 0.30f * pulse)
 
-            // The beat changes the SHAPE, not only the brightness: the gradients are re-laid on every
-            // frame with a different falloff, so the silhouette never settles.
-            val alpha = (if (level > 0.01f) 0.44f else 0.30f) * intensity * idle
-
+            // The alpha stays low on purpose: with Plus blending the brightness comes from how many
+            // lights overlap, not from how strong each one is, and that is what keeps the middle bright
+            // and the edges soft instead of blowing out in one spot.
+            val alpha = (if (level > 0.02f) 0.42f else 0.26f) * intensity * idle
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        lobeColor.copy(alpha = alpha),
-                        lobeColor.copy(alpha = alpha * 0.78f),
-                        lobeColor.copy(alpha = alpha * 0.34f),
+                        color.copy(alpha = alpha),
+                        color.copy(alpha = alpha * 0.55f),
+                        color.copy(alpha = alpha * 0.16f),
                         Color.Transparent,
                     ),
-                    center = lobeCenter,
-                    radius = lobeRadius,
+                    center = lightCenter,
+                    radius = lightRadius,
                 ),
-                radius = lobeRadius,
-                center = lobeCenter,
+                radius = lightRadius,
+                center = lightCenter,
+                blendMode = BlendMode.Plus,
             )
         }
     }

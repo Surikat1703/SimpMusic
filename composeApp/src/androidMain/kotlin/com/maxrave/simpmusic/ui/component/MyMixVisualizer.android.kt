@@ -1,13 +1,11 @@
 package com.maxrave.simpmusic.ui.component
 
-import android.graphics.RuntimeShader
+import android.graphics.Paint
 import android.os.Build
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.Box
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
@@ -15,24 +13,32 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.maxrave.logger.Logger
+import kotlin.math.cos
 import kotlin.math.exp
 
 /**
- * The My Mix field, Android side: an AGSL fragment shader from API 33 up, the Canvas blob field below
- * it.
+ * Android actual for the My Mix field.
  *
- * Nothing here recomposes per frame. The clock lives in a `MutableFloatState` written from the frame
- * callback and read inside `onDrawBehind`, so a tick invalidates only the draw pass, and the shader and
- * the Paint object are `remember`ed rather than rebuilt. That is the whole reason the visualiser is a
- * `Modifier.drawWithCache` and not a tree of animated composables.
+ * On API 33+ this is a runtime AGSL shader ([android.graphics.RuntimeShader]) drawn into the Compose
+ * canvas, so the whole picture — noise, warping, the lights, the glow — is computed per pixel on the
+ * GPU and nothing is uploaded. Below 33 the same parameters drive [MyMixWave] instead.
  *
- * The shader is compiled at runtime by Skia, so a syntax error could not be caught at build time.
- * [RuntimeShader] construction is therefore wrapped in `runCatching`: anything unexpected falls back to
- * [MyMixWave] rather than taking the screen down.
+ * The shader is compiled by Skia on the DEVICE, not at build time, so a syntax error would not fail
+ * CI: it is wrapped in `runCatching` and the field silently falls back to the Canvas renderer, which
+ * is why that renderer has to look good on its own.
+ *
+ * Uniforms come from the player, not from the audio stream: `amplitude` is the volume and `bass` the
+ * beat envelope derived from the track's BPM, because the app owns no audio session to attach a
+ * Visualizer to. `bass` is the parameter a real FFT would drive later.
+ *
+ * `Modifier.drawWithCache` keeps the clock and the level read inside the draw pass, so a new frame
+ * invalidates only the draw — no recomposition per frame.
  */
 @Composable
 actual fun MyMixVisualizer(
@@ -57,6 +63,19 @@ actual fun MyMixVisualizer(
             bass = bass,
             bpm = bpm,
             intensity = intensity,
+            fallback = {
+                MyMixWave(
+                    colorPrimary = colorPrimary,
+                    colorSecondary = colorSecondary,
+                    modifier = modifier,
+                    size = fallbackSize,
+                    isActive = true,
+                    intensity = intensity,
+                    fullBleed = fallbackFullBleed,
+                    isPlaying = isPlaying,
+                    bpm = bpm,
+                )
+            },
         )
     } else {
         MyMixWave(
@@ -64,10 +83,10 @@ actual fun MyMixVisualizer(
             colorSecondary = colorSecondary,
             modifier = modifier,
             size = fallbackSize,
-            fullBleed = fallbackFullBleed,
             isActive = true,
-            isPlaying = isPlaying,
             intensity = intensity,
+            fullBleed = fallbackFullBleed,
+            isPlaying = isPlaying,
             bpm = bpm,
         )
     }
@@ -83,71 +102,88 @@ private fun MyMixShaderField(
     bass: Float,
     bpm: Float,
     intensity: Float,
+    fallback: @Composable () -> Unit,
 ) {
+    val shader = remember {
+        runCatching { android.graphics.RuntimeShader(MyMixShader.AGSL) }
+            .onFailure { Logger.e("MyMixVisualizer", "AGSL field rejected, using the Canvas fallback: ${it.message}") }
+            .getOrNull()
+    }
+    if (shader == null) {
+        fallback()
+        return
+    }
+
     val clock = remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(Unit) {
+    androidx.compose.runtime.LaunchedEffect(Unit) {
         var previous = withFrameNanos { it }
         while (true) {
             val now = withFrameNanos { it }
-            clock.value = clock.value + (now - previous) / 1_000_000_000f
+            clock.value += (now - previous) / 1_000_000_000f
             previous = now
         }
     }
-    // The level eases in and out, so play and pause never cut the field.
-    val level by animateFloatAsState(
+    val energy by animateFloatAsState(
         targetValue = if (isPlaying) 1f else 0f,
         animationSpec = tween(900, easing = FastOutSlowInEasing),
-        label = "myMixShaderLevel",
+        label = "myMixShaderEnergy",
     )
-    val shader = remember { runCatching { RuntimeShader(MyMixShader.AGSL) }.getOrNull() }
-    if (shader == null) {
-        MyMixWave(
-            colorPrimary = colorPrimary,
-            colorSecondary = colorSecondary,
-            modifier = modifier,
-            size = 240.dp,
-            fullBleed = true,
-            isActive = true,
-            isPlaying = isPlaying,
-            intensity = intensity,
-            bpm = bpm,
-        )
-        return
-    }
     val paint = remember {
-        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { isDither = true }
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            isDither = true
+            style = Paint.Style.FILL
+        }
     }
 
-    Box(
+    androidx.compose.foundation.Canvas(
         modifier = modifier.drawWithCache {
             onDrawBehind {
+                val level = energy
                 val t = clock.value
-                val energy = level
-                // Paused means grey: the palette itself is pulled towards grey by the level, so the
-                // shader never has to know whether the music is playing.
-                val base = lerp(Color(0xFF6B6B6B), colorPrimary, energy)
-                val accent = lerp(Color(0xFF6B6B6B), colorSecondary, energy)
-                val third = rotateHue(base)
+                val grey = Color(0xFF6B6B6B)
+                val hot = vivid(lerp(grey, colorPrimary, level))
+                val cool = vivid(lerp(grey, colorSecondary, level))
+                val third = vivid(lerp(rotateHue(hot), cool, 0.45f))
+
                 val beat = (t * bpm / 60f) % 1f
-                val pulse = (exp(-5.5f * beat) * energy).coerceIn(0f, 1f)
+                val pulse = (exp(-5.0f * beat) * level).coerceIn(0f, 1f)
 
                 shader.setFloatUniform("uTime", t)
                 shader.setFloatUniform("uResolution", size.width, size.height)
-                shader.setFloatUniform("uSpeed", 0.15f + 0.85f * energy)
-                shader.setFloatUniform(
-                    "uAmplitude",
-                    (amplitude.coerceIn(0f, 1f) * (0.35f + 0.65f * energy) * intensity),
-                )
-                shader.setFloatUniform("uBass", (pulse + bass * energy).coerceIn(0f, 1f))
-                shader.setFloatUniform("uColor1", floatArrayOf(base.red, base.green, base.blue))
-                shader.setFloatUniform("uColor2", floatArrayOf(accent.red, accent.green, accent.blue))
-                shader.setFloatUniform("uColor3", floatArrayOf(third.red, third.green, third.blue))
+                shader.setFloatUniform("uSpeed", 0.20f + 0.80f * level)
+                shader.setFloatUniform("uAmplitude", amplitude.coerceIn(0f, 1f) * intensity)
+                shader.setFloatUniform("uBass", (pulse + bass.coerceIn(0f, 1f) * level).coerceIn(0f, 1.5f))
+                shader.setFloatUniform("uColor1", hot.red, hot.green, hot.blue)
+                shader.setFloatUniform("uColor2", cool.red, cool.green, cool.blue)
+                shader.setFloatUniform("uColor3", third.red, third.green, third.blue)
 
                 paint.shader = shader
-                drawContext.canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
+                drawIntoCanvas { canvas ->
+                    canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
+                }
             }
         },
     )
+}
+
+/**
+ * Fork: pushes a colour towards full saturation and a usable brightness, because artwork palettes are
+ * frequently washed out or nearly grey and the field would otherwise inherit a grey wash.
+ */
+private fun vivid(color: Color): Color {
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(
+        android.graphics.Color.argb(
+            (color.alpha * 255f).toInt().coerceIn(0, 255),
+            (color.red * 255f).toInt().coerceIn(0, 255),
+            (color.green * 255f).toInt().coerceIn(0, 255),
+            (color.blue * 255f).toInt().coerceIn(0, 255),
+        ),
+        hsv,
+    )
+    hsv[1] = maxOf(hsv[1], 0.72f)
+    hsv[2] = maxOf(hsv[2], 0.78f)
+    return Color(android.graphics.Color.HSVToColor(hsv))
 }
 
 /** Rotates the colour channels: a cheap, saturated hue shift with no colour-space maths. */
@@ -159,94 +195,111 @@ private fun rotateHue(color: Color): Color = Color(
 )
 
 /**
- * The AGSL source.
+ * The AGSL program. Written for SkSL, which is a restricted GLSL: no preprocessor, no arrays, no
+ * swizzle assignment, no uniform structs. Everything in here is plain arithmetic and `mix`/`fract`/
+ * `sin`/`pow` on floats, which is the subset Skia is guaranteed to accept.
  *
- * Two fields are merged: a domain-warped gradient-noise field (Perlin-style, two warp octaves) gives
- * the liquid marbling, and a metaball sum gives the volume — the glow lives where the balls overlap,
- * which is what makes it read as light rather than paint. `uBass` widens the balls and brightens the
- * glow, `uSpeed` scales the drift, and `uTime` never wraps.
- *
- * Kept to plain arithmetic and function calls on purpose: no preprocessor, no arrays, no swizzle
- * assignment and no `const` locals, because the shader is compiled by Skia on the device and anything
- * exotic fails at runtime rather than at build time.
+ * The picture: gradient noise warped into itself twice (the "liquid"), then six large lights placed
+ * along the warp and ADDED together. The addition is the whole effect — where lights overlap the
+ * colour climbs and eventually reads as white-hot, while a single light stays a soft coloured haze.
+ * A Reinhard tonemap (`c / (1 + c)`) at the end is what keeps the overlap saturated instead of a flat
+ * blown-out white.
  */
 private object MyMixShader {
     const val AGSL = """
 uniform float uTime;
-uniform float2 uResolution;
 uniform float uSpeed;
 uniform float uAmplitude;
 uniform float uBass;
+uniform float2 uResolution;
 uniform float3 uColor1;
 uniform float3 uColor2;
 uniform float3 uColor3;
 
 float hash21(float2 p) {
-    float2 s = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));
-    return fract(sin(s) * 43758.5453123) * 2.0 - 1.0;
+    float2 q = fract(p * float2(127.1, 311.7));
+    q = q + dot(q, q + 34.23);
+    return fract(q.x * q.y);
 }
 
-float gradNoise(float2 p) {
+float noise(float2 p) {
     float2 i = floor(p);
     float2 f = fract(p);
-    float2 u = float2(f.x * f.x * (3.0 - 2.0 * f.x), f.y * f.y * (3.0 - 2.0 * f.y));
-    float a = dot(hash21(i), f);
-    float b = dot(hash21(i + float2(1.0, 0.0)), f - float2(1.0, 0.0));
-    float c = dot(hash21(i + float2(0.0, 1.0)), f - float2(0.0, 1.0));
-    float d = dot(hash21(i + float2(1.0, 1.0)), f - float2(1.0, 1.0));
+    float2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + float2(1.0, 0.0));
+    float c = hash21(i + float2(0.0, 1.0));
+    float d = hash21(i + float2(1.0, 1.0));
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
+float fbm(float2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    v = v + a * noise(p);
+    p = p * 2.03;
+    a = a * 0.5;
+    v = v + a * noise(p);
+    p = p * 2.03;
+    a = a * 0.5;
+    v = v + a * noise(p);
+    p = p * 2.03;
+    a = a * 0.5;
+    v = v + a * noise(p);
+    return v;
+}
+
+float light(float2 p, float2 c, float r) {
+    float2 d = p - c;
+    return r / (0.03 + dot(d, d));
+}
+
 half4 main(float2 fragCoord) {
-    float2 res = uResolution;
-    float2 uv = float2(fragCoord.x / res.x, fragCoord.y / res.y);
+    float2 res = max(uResolution, float2(1.0, 1.0));
     float aspect = res.x / res.y;
-    float2 p = float2((uv.x - 0.5) * aspect * 1.7, (uv.y - 0.5) * 1.7);
+    float2 uv = fragCoord / res;
+    float2 p = (uv - 0.5) * float2(aspect, 1.0);
 
-    float t = uTime * (0.20 + 0.55 * uSpeed);
-    float bass = uBass;
-    float amp = uAmplitude;
+    float t = uTime * uSpeed;
+    float amp = clamp(uAmplitude, 0.0, 1.0);
+    float bass = clamp(uBass, 0.0, 1.5);
 
-    float2 q = float2(gradNoise(float2(p.x, p.y + t * 0.60)), gradNoise(float2(p.x + 5.2, p.y + 1.3 - t * 0.50)));
-    float2 r = float2(
-        gradNoise(float2(p.x + 1.6 * q.x + 1.7, p.y + 1.6 * q.y + 9.2 + t * 0.35)),
-        gradNoise(float2(p.x + 1.6 * q.x + 8.3, p.y + 1.6 * q.y + 2.8 - t * 0.28))
-    );
-    float n = gradNoise(float2(p.x + 2.2 * r.x + t * 0.18, p.y + 2.2 * r.y + t * 0.18));
+    // The liquid: the coordinate is warped by noise, then the warped coordinate is warped again.
+    float w1 = fbm(p * 1.5 + float2(t * 0.11, -t * 0.07));
+    float w2 = fbm(p * 2.3 - float2(t * 0.06, t * 0.09) + w1);
+    float2 q = p + float2(w2 - 0.5, w1 - 0.5) * (0.42 + 0.30 * bass + 0.10 * amp);
 
-    float2 c0 = float2(sin(t * 0.31) * 0.80, cos(t * 0.27) * 0.58);
-    float2 c1 = float2(sin(t * 0.21 + 2.1) * 0.70, cos(t * 0.34 + 0.7) * 0.74);
-    float2 c2 = float2(sin(t * 0.44 + 4.2) * 0.58, cos(t * 0.19 + 3.3) * 0.86);
-    float2 c3 = float2(sin(t * 0.17 + 1.1) * 0.92, cos(t * 0.41 + 5.1) * 0.42);
+    // Six lights drifting on their own orbits, pushed outward by the beat.
+    float spread = 1.0 + 0.16 * bass;
+    float2 l0 = float2(sin(t * 0.33) * 0.46, cos(t * 0.26) * 0.34) * spread;
+    float2 l1 = float2(cos(t * 0.21 + 1.7) * 0.58, sin(t * 0.30 + 0.6) * 0.44) * spread;
+    float2 l2 = float2(sin(t * 0.17 + 3.1) * 0.36, cos(t * 0.39 + 2.2) * 0.50) * spread;
+    float2 l3 = float2(cos(t * 0.27 + 4.4) * 0.52, sin(t * 0.15 + 5.1) * 0.28) * spread;
+    float2 l4 = float2(sin(t * 0.12 + 2.6) * 0.30, cos(t * 0.35 + 1.1) * 0.54) * spread;
+    float2 l5 = float2(cos(t * 0.25 + 0.4) * 0.62, sin(t * 0.19 + 3.7) * 0.38) * spread;
 
-    float2 d0 = p - c0;
-    float2 d1 = p - c1;
-    float2 d2 = p - c2;
-    float2 d3 = p - c3;
+    float r = (0.20 + 0.14 * bass + 0.06 * amp) / (0.9 + 0.4 * aspect);
 
-    float wob = 0.28 + 0.16 * bass + 0.10 * amp;
-    float field = 0.0;
-    field = field + wob / (0.05 + dot(d0, d0) * 1.5);
-    field = field + wob / (0.05 + dot(d1, d1) * 1.6);
-    field = field + wob / (0.05 + dot(d2, d2) * 1.7);
-    field = field + wob / (0.05 + dot(d3, d3) * 1.8);
-    field = field * (0.16 + 0.06 * n);
+    float3 col = float3(0.024, 0.026, 0.040);
+    col = col + uColor1 * light(q, l0, r) * 0.70;
+    col = col + uColor2 * light(q, l1, r * 0.9) * 0.66;
+    col = col + uColor3 * light(q, l2, r * 1.1) * 0.60;
+    col = col + uColor1 * light(q, l3, r * 0.8) * 0.54;
+    col = col + uColor2 * light(q, l4, r * 1.2) * 0.50;
+    col = col + uColor3 * light(q, l5, r * 0.7) * 0.58;
 
-    float seam = 0.5 + 0.5 * n;
-    float edge = smoothstep(0.35, 0.95, field);
+    // Local density: the same noise that warped the field also decides where it is thicker, so the
+    // glow has structure instead of being six perfectly round blobs.
+    float density = 0.62 + 0.70 * fbm(q * 1.7 + float2(-t * 0.05, t * 0.04));
+    col = col * density;
 
-    float3 tintA = mix(uColor1, uColor2, clamp(seam + 0.15 * bass, 0.0, 1.0));
-    float3 tintB = mix(uColor3, uColor1, clamp(field, 0.0, 1.0));
-    float3 tint = mix(tintA, tintB, clamp(0.5 + 0.5 * n, 0.0, 1.0));
+    // Reinhard tonemap, then a gentle gain: overlap saturates towards white without clipping flat.
+    col = col / (1.0 + col);
+    col = col * 2.25;
 
-    float3 col = float3(0.035, 0.037, 0.055);
-    col = mix(col, tint, edge * 0.92);
-
-    float glow = pow(clamp(field, 0.0, 1.0), 2.2);
-    col = col + mix(uColor2, uColor3, 0.5) * glow * (0.35 + 0.45 * bass);
-
-    float2 vc = float2(uv.x - 0.5, uv.y - 0.5);
-    col = col * (1.0 - 0.85 * dot(vc, vc));
+    float2 vc = p * float2(0.85, 1.0);
+    col = col * (1.0 - 0.55 * dot(vc, vc));
+    col = max(col, float3(0.0, 0.0, 0.0));
 
     return half4(col, 1.0);
 }

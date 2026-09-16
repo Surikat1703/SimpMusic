@@ -924,16 +924,14 @@ private fun MyMixNowPlaying(
                 // Fork: the fill is pinned to the START of the pill. A fraction-width child of a Box
                 // with Center alignment grows out of the middle, which is exactly why the bar looked
                 // like it started halfway across.
+                // Fork: a single flat tint, no gradient and no moving highlight — the bar is a surface,
+                // not an indicator, so nothing in it travels while the track plays.
                 Box(
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .fillMaxHeight()
                         .fillMaxWidth(fraction)
-                        .background(
-                            Brush.horizontalGradient(
-                                listOf(accent.copy(alpha = 0.34f), accent.copy(alpha = 0.62f)),
-                            ),
-                        ),
+                        .background(accent.copy(alpha = 0.30f)),
                 )
                 Text(
                     text = "${formatDuration(timeline.current)} / ${formatDuration(timeline.total)}",
@@ -956,7 +954,9 @@ private fun MyMixNowPlaying(
                     },
                     modifier = Modifier.fillMaxSize(),
                     colors = SliderDefaults.colors(
-                        thumbColor = Color.White,
+                        // Fork: the thumb is invisible on purpose. It was the white sliver that crawled
+                        // across the pill while a track played, and the pill already shows the position.
+                        thumbColor = Color.Transparent,
                         activeTrackColor = Color.Transparent,
                         inactiveTrackColor = Color.Transparent,
                     ),
