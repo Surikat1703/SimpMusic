@@ -563,7 +563,6 @@ fun MyMixScreen(
                             }
                         }
 
-                }
             }
 
             // The big button starts whatever is selected; it steps aside once that selection is the
@@ -615,7 +614,7 @@ fun MyMixScreen(
                     Text(
                         text = stringResource(Res.string.my_mix_empty),
                         style = typo().bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = Color.White.copy(alpha = 0.85f),
                     )
                 }
             }
@@ -642,7 +641,7 @@ fun MyMixScreen(
                         Text(
                             text = stringResource(Res.string.my_mix_all_mixes),
                             style = typo().titleMedium,
-                            color = MaterialTheme.colorScheme.onBackground,
+                            color = Color.White,
                         )
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             items(items = allMixes, key = { it.browseId }) { mix ->
@@ -1016,7 +1015,7 @@ private fun MixTile(
         Text(
             text = cleanMoodName(mix.title),
             style = typo().bodyMedium,
-            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
+            color = if (isSelected) Color.White else Color.White.copy(alpha = 0.72f),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
