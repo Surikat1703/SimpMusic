@@ -46,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -107,6 +108,36 @@ import simpmusic.composeapp.generated.resources.my_mix_preparing
 import simpmusic.composeapp.generated.resources.my_mix_subtitle
 import simpmusic.composeapp.generated.resources.radio
 import simpmusic.composeapp.generated.resources.view_count
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.maxrave.domain.data.entities.SongEntity
+import com.maxrave.domain.data.model.streams.TimeLine
+import com.maxrave.domain.repository.SongRepository
+import com.maxrave.domain.utils.connectArtists
+import com.maxrave.domain.utils.toArrayListTrack
+import com.maxrave.simpmusic.extension.formatDuration
+import com.maxrave.simpmusic.ui.component.HeartCheckBox
+import com.maxrave.simpmusic.ui.icon.Close
+import com.maxrave.simpmusic.ui.icon.SkipNext
+import com.maxrave.simpmusic.ui.icon.SkipPrevious
+import com.maxrave.simpmusic.ui.icon.UnfoldMore
+import com.maxrave.simpmusic.ui.icon.VolumeOff
+import com.maxrave.simpmusic.ui.icon.VolumeUp
+import com.maxrave.simpmusic.ui.navigation.destination.player.FullscreenDestination
+import simpmusic.composeapp.generated.resources.my_mix_all_moods
 import kotlin.time.Clock
 
 /**
@@ -132,6 +163,33 @@ object MyMixPrefs {
 }
 
 /**
+ * Fork: the mood row's non-mix entry. It is not a browseId — the screen plays the locally liked songs
+ * for it — so it needs an id that can never collide with one.
+ */
+private const val LIKES_MOOD_ID = "liked"
+
+/**
+ * Fork: "Микс для вечеринки 2" -> "Для вечеринки".
+ *
+ * Two things get in the way of a mood row. YouTube appends an index to duplicated entries, so the
+ * same mood arrives as "… 1", "… 2" and "… 3"; and the shelf repeats the word "микс"/"mix" in every
+ * single title, which is noise when the whole row is mixes. The index is stripped from either end and
+ * so is a leading or trailing "микс"/"mix" — only at the edges, so a "Remix" in the middle is left
+ * alone. If that empties the name, the de-numbered original is kept.
+ */
+private fun cleanMoodName(raw: String): String {
+    val deNumbered = raw.replace(Regex("""\s*[#№]?\s*\d+\s*$"""), "").trim()
+    val stripped = deNumbered
+        .replace(Regex("""^\s*(миксы|микс|mix)\s*""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""\s+(миксы|микс|mix)\s*$""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""\s{2,}"""), " ")
+        .trim()
+        .trim('-', '–', '—', ':', ',', '«', '»', '(', ')')
+        .trim()
+    return stripped.ifBlank { deNumbered }.ifBlank { raw }
+}
+
+/**
  * The "My Mix" tab — a Yandex-Music-shaped home for the YouTube Music mixes, replacing the plain
  * grid that used to own this tab ([MixForYouOriginalScreen] still exists and is reachable from the
  * header button).
@@ -150,10 +208,13 @@ fun MyMixScreen(
     val scope = rememberCoroutineScope()
     val sharedViewModel: SharedViewModel = koinInject()
     val playlistRepository: PlaylistRepository = koinInject()
+    val songRepository: SongRepository = koinInject()
     val dataStoreManager: DataStoreManager = koinInject()
 
     // Fork: the field dances to whatever is playing, so the hero follows the transport state.
     val controllerState by sharedViewModel.controllerState.collectAsStateWithLifecycle()
+    val nowPlaying by sharedViewModel.nowPlayingState.collectAsStateWithLifecycle()
+    val timelineState by sharedViewModel.timeline.collectAsStateWithLifecycle()
 
     val mixResource by viewModel.youTubeMixForYou.collectAsStateWithLifecycle()
     val allMixes = mixResource.data.orEmpty()
@@ -175,10 +236,16 @@ fun MyMixScreen(
     val nameFiltered = remember(allMixes) {
         allMixes.filter { it.title.contains("mix", true) || it.title.contains("микс", true) }
     }
-    // Every entry of "Mixed for you" is a mix, so the row is never empty just because none of them
-    // happens to carry the word in its title.
+    // Fork: YouTube ships the shelf as numbered duplicates ("Mix 1", "Mix 2", "Микс 3") and repeats
+    // the word "микс" in every title, so a row of eight identical-looking pills is really three
+    // moods. One entry per cleaned name is kept, which drops both the numbering and the copies.
     val moodMixes = remember(allMixes, nameFiltered) {
-        nameFiltered.ifEmpty { allMixes }
+        val source = nameFiltered.ifEmpty { allMixes }
+        val seen = mutableSetOf<String>()
+        source.filter { mix ->
+            val name = cleanMoodName(mix.title)
+            name.isNotBlank() && seen.add(name.lowercase())
+        }
     }
 
     var selectedMoodId by remember { mutableStateOf<String?>(null) }
@@ -209,18 +276,44 @@ fun MyMixScreen(
         targetValue = dominantColorState.color,
         animationSpec = tween(700),
     )
-    // A near-white cover would paint a near-white field, so a pale colour is swapped for the app
-    // accent: the hero has to stay saturated for white text to sit on it.
-    val fieldColor = if (dominant.luminance() > 0.72f) MaterialTheme.colorScheme.primary else dominant
-    val waveSecondary = MaterialTheme.colorScheme.primary
+    // Fork: once this tab has started something, the field follows the SONG rather than the mix, so
+    // every skip hands over that track's own colour — quickly (350 ms) so the change is felt at once
+    // without ever looking like a cut.
+    val playingArtworkUrl = nowPlaying?.songEntity?.thumbnails
+    val playingColorState = rememberDominantColorState(
+        defaultColor = MaterialTheme.colorScheme.primary,
+        defaultOnColor = backgroundColor,
+        loader = networkLoader,
+    )
+    LaunchedEffect(playingArtworkUrl) {
+        playingArtworkUrl?.let { playingColorState.updateFrom(Url(it)) }
+    }
+    val playingDominant by animateColorAsState(
+        targetValue = playingColorState.color,
+        animationSpec = tween(350),
+    )
 
     var isPreparing by remember { mutableStateOf(false) }
     var playFailed by remember { mutableStateOf(false) }
+    var showAllMoods by remember { mutableStateOf(false) }
 
-    // The mix this screen last started: it decides whether the big button toggles the transport or
-    // starts the selected mix, and whether the field reacts to the music.
+    // The source this screen last started: it decides whether the big button toggles the transport or
+    // starts the selection, and whether the field reacts to the music. [LIKES_MOOD_ID] is not a mix —
+    // it is the local favourites, which is why "Без настроения" became "Любимые треки".
     var startedMixId by remember { mutableStateOf<String?>(null) }
-    val isSelectedMixPlaying = controllerState.isPlaying && startedMixId == selectedMix?.browseId
+    val isLikesSelected = selectedMoodId == LIKES_MOOD_ID
+    val heroSourceKey = if (isLikesSelected) LIKES_MOOD_ID else selectedMix?.browseId
+    val isSelectedMixPlaying = controllerState.isPlaying && startedMixId == heroSourceKey
+
+    val heroDominant = if (startedMixId != null && nowPlaying?.songEntity != null) {
+        playingDominant
+    } else {
+        dominant
+    }
+    // A near-white cover would paint a near-white field, so a pale colour is swapped for the app
+    // accent: the hero has to stay saturated for white text to sit on it.
+    val fieldColor = if (heroDominant.luminance() > 0.72f) MaterialTheme.colorScheme.primary else heroDominant
+    val waveSecondary = MaterialTheme.colorScheme.primary
 
     fun playMix(mix: PlaylistsResult) {
         if (isPreparing) return
@@ -269,6 +362,37 @@ fun MyMixScreen(
         }
     }
 
+    // Fork: the "Любимые треки" pill. It plays the app's own liked songs, which live in the local
+    // database and need no network at all — so this entry keeps working offline and behind a VPN.
+    fun playLikes() {
+        if (isPreparing) return
+        isPreparing = true
+        playFailed = false
+        scope.launch {
+            try {
+                val tracks = songRepository.getLikedSongs().first().toArrayListTrack()
+                if (tracks.isEmpty()) {
+                    playFailed = true
+                    return@launch
+                }
+                sharedViewModel.setQueueData(
+                    QueueData.Data(
+                        listTracks = tracks,
+                        firstPlayedTrack = tracks.first(),
+                        playlistId = null,
+                        playlistName = getStringBlocking(Res.string.my_mix_no_mood),
+                        playlistType = QueuePlaylistType.PLAYLIST,
+                        continuation = null,
+                    ),
+                )
+                sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
+                startedMixId = LIKES_MOOD_ID
+            } finally {
+                isPreparing = false
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -288,7 +412,9 @@ fun MyMixScreen(
             modifier = Modifier.fillMaxSize(),
             fullBleed = true,
             isActive = true,
-            isPlaying = isSelectedMixPlaying,
+            // The field answers to the transport, not to this tab's own player: music playing from
+            // anywhere lights it up, and pausing anywhere drops it back to grey.
+            isPlaying = controllerState.isPlaying,
         )
 
         LazyColumn(
@@ -329,26 +455,51 @@ fun MyMixScreen(
                         }
                     }
 
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Text(
-                            text = selectedMix?.title ?: stringResource(Res.string.my_mix_subtitle),
-                            style = typo().titleLarge.copy(fontSize = 38.sp, fontWeight = FontWeight.Bold),
-                            color = Color.White,
-                            textAlign = TextAlign.Center,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
+                    // Fork: the middle of the hero is the mood name until something is playing, and the
+                    // player itself once this tab has started a queue — the stock mini player is hidden
+                    // on this tab, so this IS the player here.
+                    val nowSong = nowPlaying?.songEntity
+                    if (startedMixId != null && nowSong != null) {
+                        MyMixNowPlaying(
+                            song = nowSong,
+                            isPlaying = controllerState.isPlaying,
+                            isLiked = controllerState.isLiked,
+                            volume = controllerState.volume,
+                            timeline = timelineState,
+                            onOpenFullPlayer = { navController.navigate(FullscreenDestination) },
+                            onToggleLike = { sharedViewModel.onUIEvent(UIEvent.ToggleLike) },
+                            onPlayPause = { sharedViewModel.onUIEvent(UIEvent.PlayPause) },
+                            onNext = { sharedViewModel.onUIEvent(UIEvent.Next) },
+                            onPrevious = { sharedViewModel.onUIEvent(UIEvent.Previous) },
+                            onVolume = { sharedViewModel.onUIEvent(UIEvent.UpdateVolume(it)) },
+                            onSeek = { sharedViewModel.onUIEvent(UIEvent.UpdateProgress(it)) },
                         )
-                        if (playFailed) {
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
                             Text(
-                                text = stringResource(Res.string.my_mix_empty),
-                                style = typo().bodyMedium,
-                                color = Color.White.copy(alpha = 0.85f),
+                                text = if (isLikesSelected) {
+                                    stringResource(Res.string.my_mix_no_mood)
+                                } else {
+                                    selectedMix?.title ?: stringResource(Res.string.my_mix_subtitle)
+                                },
+                                style = typo().titleLarge.copy(fontSize = 38.sp, fontWeight = FontWeight.Bold),
+                                color = Color.White,
                                 textAlign = TextAlign.Center,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
                             )
+                            if (playFailed) {
+                                Text(
+                                    text = stringResource(Res.string.my_mix_empty),
+                                    style = typo().bodyMedium,
+                                    color = Color.White.copy(alpha = 0.85f),
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
                         }
                     }
 
@@ -357,45 +508,61 @@ fun MyMixScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(18.dp),
                     ) {
-                        if (moodMixes.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
                             LazyRow(
+                                modifier = Modifier.weight(1f),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 contentPadding = PaddingValues(horizontal = 2.dp),
                             ) {
-                                item(key = "no_mood") {
+                                item(key = "liked") {
                                     MoodPill(
                                         label = stringResource(Res.string.my_mix_no_mood),
-                                        selected = selectedMoodId == null,
+                                        selected = isLikesSelected,
                                         onClick = {
-                                            selectedMoodId = null
-                                            scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, "") }
+                                            selectedMoodId = LIKES_MOOD_ID
+                                            scope.launch {
+                                                dataStoreManager.putString(MyMixPrefs.MOOD_ID, LIKES_MOOD_ID)
+                                            }
                                         },
                                     )
                                 }
                                 items(items = moodMixes, key = { it.browseId }) { mix ->
                                     MoodPill(
-                                        label = mix.title,
-                                        selected = mix.browseId == selectedMix?.browseId,
+                                        label = cleanMoodName(mix.title),
+                                        selected = !isLikesSelected && mix.browseId == selectedMix?.browseId,
                                         onClick = {
                                             selectedMoodId = mix.browseId
-                                            scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
+                                            scope.launch {
+                                                dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId)
+                                            }
                                         },
                                     )
                                 }
                             }
+                            // Fork: the row only has space for a few moods; this opens the whole shelf.
+                            IconButton(onClick = { showAllMoods = true }) {
+                                Icon(
+                                    imageVector = SimpIcons.UnfoldMore,
+                                    contentDescription = stringResource(Res.string.my_mix_all_moods),
+                                    tint = Color.White,
+                                )
+                            }
                         }
 
-                        val startedThisMix = startedMixId != null && startedMixId == selectedMix?.browseId
+                        val startedThisMix = startedMixId != null && startedMixId == heroSourceKey
                         FilledIconButton(
                             onClick = {
-                                if (startedThisMix) {
-                                    sharedViewModel.onUIEvent(UIEvent.PlayPause)
-                                } else {
-                                    selectedMix?.let { playMix(it) }
+                                when {
+                                    startedThisMix -> sharedViewModel.onUIEvent(UIEvent.PlayPause)
+                                    isLikesSelected -> playLikes()
+                                    else -> selectedMix?.let { playMix(it) }
                                 }
                             },
                             modifier = Modifier.size(84.dp),
-                            enabled = !isPreparing && (selectedMix != null || startedThisMix),
+                            enabled = !isPreparing && (isLikesSelected || selectedMix != null),
                             colors = IconButtonDefaults.filledIconButtonColors(
                                 containerColor = Color.White,
                                 contentColor = Color.Black,
@@ -471,6 +638,290 @@ fun MyMixScreen(
                 }
             }
         }
+
+        if (showAllMoods) {
+            MyMixMoodPicker(
+                moods = moodMixes,
+                selectedId = selectedMoodId,
+                onSelect = { id ->
+                    selectedMoodId = id
+                    scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, id) }
+                    showAllMoods = false
+                },
+                onDismiss = { showAllMoods = false },
+            )
+        }
+    }
+}
+
+/**
+ * Fork: the mood row only has space for what fits; this is the same shelf on a page of its own.
+ */
+@Composable
+private fun MyMixMoodPicker(
+    moods: List<PlaylistsResult>,
+    selectedId: String?,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(18.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = stringResource(Res.string.my_mix_all_moods),
+                        style = typo().titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = SimpIcons.Close,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    item(key = "liked") {
+                        MoodGridTile(
+                            title = stringResource(Res.string.my_mix_no_mood),
+                            artwork = null,
+                            selected = selectedId == LIKES_MOOD_ID,
+                            onClick = { onSelect(LIKES_MOOD_ID) },
+                        )
+                    }
+                    items(items = moods, key = { it.browseId }) { mix ->
+                        MoodGridTile(
+                            title = cleanMoodName(mix.title),
+                            artwork = mix.thumbnails.lastOrNull()?.url,
+                            selected = mix.browseId == selectedId,
+                            onClick = { onSelect(mix.browseId) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MoodGridTile(
+    title: String,
+    artwork: String?,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(18.dp))
+            .clickable { onClick() },
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        AsyncImage(
+            model = artwork,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(18.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            contentDescription = title,
+        )
+        Text(
+            text = title,
+            style = typo().bodyMedium,
+            color = if (selected) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * Fork: the in-tab player. The stock mini player is hidden on this tab, so the hero carries a full
+ * transport of its own: artwork, artist and title (all three open the real Now Playing page), a
+ * seekable progress pill with the timestamps inside it, a mute toggle, the like button and
+ * previous/play/next.
+ */
+@Composable
+private fun MyMixNowPlaying(
+    song: SongEntity,
+    isPlaying: Boolean,
+    isLiked: Boolean,
+    volume: Float,
+    timeline: TimeLine,
+    onOpenFullPlayer: () -> Unit,
+    onToggleLike: () -> Unit,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit,
+    onPrevious: () -> Unit,
+    onVolume: (Float) -> Unit,
+    onSeek: (Float) -> Unit,
+) {
+    var isSliding by remember { mutableStateOf(false) }
+    var sliderValue by remember { mutableStateOf(0f) }
+
+    LaunchedEffect(timeline, isSliding) {
+        if (!isSliding) {
+            sliderValue = if (timeline.total > 0L) {
+                timeline.current.toFloat() * 100f / timeline.total
+            } else {
+                0f
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        AsyncImage(
+            model = song.thumbnails,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(168.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color.White.copy(alpha = 0.12f))
+                .clickable { onOpenFullPlayer() },
+            contentDescription = song.title,
+        )
+        Text(
+            text = song.title,
+            style = typo().titleLarge.copy(fontSize = 26.sp, fontWeight = FontWeight.Bold),
+            color = Color.White,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpenFullPlayer() },
+        )
+        Text(
+            text = song.artistName?.connectArtists().orEmpty(),
+            style = typo().bodyMedium,
+            color = Color.White.copy(alpha = 0.82f),
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpenFullPlayer() },
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            IconButton(onClick = { onVolume(if (volume > 0f) 0f else 1f) }) {
+                Icon(
+                    imageVector = if (volume > 0f) SimpIcons.VolumeUp else SimpIcons.VolumeOff,
+                    contentDescription = null,
+                    tint = Color.White,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.White.copy(alpha = 0.18f))
+                    .padding(horizontal = 14.dp, vertical = 2.dp),
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "${formatDuration(timeline.current)} / ${formatDuration(timeline.total)}",
+                        style = typo().bodyMedium,
+                        color = Color.White,
+                    )
+                    Slider(
+                        value = sliderValue,
+                        onValueChange = { value ->
+                            isSliding = true
+                            sliderValue = value
+                        },
+                        onValueChangeFinished = {
+                            isSliding = false
+                            onSeek(sliderValue)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(20.dp),
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = Color.White,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.28f),
+                        ),
+                    )
+                }
+            }
+            HeartCheckBox(
+                checked = isLiked,
+                size = 32,
+                tint = Color.White,
+            ) { onToggleLike() }
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(26.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onPrevious, modifier = Modifier.size(46.dp)) {
+                Icon(
+                    imageVector = SimpIcons.SkipPrevious,
+                    contentDescription = null,
+                    modifier = Modifier.size(30.dp),
+                    tint = Color.White,
+                )
+            }
+            FilledIconButton(
+                onClick = onPlayPause,
+                modifier = Modifier.size(74.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = Color.White,
+                    contentColor = Color.Black,
+                ),
+            ) {
+                Icon(
+                    imageVector = if (isPlaying) SimpIcons.Pause else SimpIcons.PlayArrow,
+                    contentDescription = stringResource(Res.string.my_mix_play),
+                    modifier = Modifier.size(36.dp),
+                )
+            }
+            IconButton(onClick = onNext, modifier = Modifier.size(46.dp)) {
+                Icon(
+                    imageVector = SimpIcons.SkipNext,
+                    contentDescription = null,
+                    modifier = Modifier.size(30.dp),
+                    tint = Color.White,
+                )
+            }
+        }
     }
 }
 
@@ -523,7 +974,7 @@ private fun MixTile(
             contentDescription = mix.title,
         )
         Text(
-            text = mix.title,
+            text = cleanMoodName(mix.title),
             style = typo().bodyMedium,
             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
             maxLines = 2,
@@ -569,8 +1020,10 @@ private fun MyMixCacheCard(
         scope.launch { dataStoreManager.putString(MyMixPrefs.CACHE_INTERVAL_DAYS, clamped.toString()) }
     }
 
+    // Fork: white-on-glass, to match the rest of the page — the hero is a colour field, so a solid
+    // Material surface reads as a hole punched through it.
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = Color.White.copy(alpha = 0.12f),
         shape = RoundedCornerShape(24.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -587,15 +1040,26 @@ private fun MyMixCacheCard(
                     Text(
                         text = stringResource(Res.string.my_mix_auto_cache),
                         style = typo().titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = Color.White,
                     )
                     Text(
                         text = stringResource(Res.string.my_mix_auto_cache_desc),
                         style = typo().bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = Color.White.copy(alpha = 0.72f),
                     )
                 }
-                Switch(checked = enabled, onCheckedChange = { setEnabled(it) })
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { setEnabled(it) },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = Color.White.copy(alpha = 0.35f),
+                        checkedBorderColor = Color.Transparent,
+                        uncheckedThumbColor = Color.White,
+                        uncheckedTrackColor = Color.White.copy(alpha = 0.12f),
+                        uncheckedBorderColor = Color.White.copy(alpha = 0.45f),
+                    ),
+                )
             }
 
             AnimatedVisibility(visible = enabled) {
@@ -613,6 +1077,10 @@ private fun MyMixCacheCard(
                     FilledTonalButton(
                         onClick = onRefreshNow,
                         modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.18f),
+                            contentColor = Color.White,
+                        ),
                     ) {
                         Text(text = stringResource(Res.string.my_mix_cache_now))
                     }
@@ -628,6 +1096,21 @@ private fun StepperRow(
     value: Int,
     onValueChange: (Int) -> Unit,
 ) {
+    // Fork: a number is typed as often as it is stepped, so the value is a real text field. It holds
+    // its own text while it is being edited and only reports back on Done or when focus leaves, so the
+    // clamp cannot fight the keyboard mid-number.
+    var text by remember(value) { mutableStateOf(value.toString()) }
+    var focused by remember { mutableStateOf(false) }
+
+    fun commit() {
+        val parsed = text.toIntOrNull()
+        if (parsed == null) {
+            text = value.toString()
+        } else {
+            onValueChange(parsed)
+        }
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -636,7 +1119,7 @@ private fun StepperRow(
         Text(
             text = label,
             style = typo().bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = Color.White,
             modifier = Modifier.weight(1f),
         )
         Row(
@@ -647,25 +1130,38 @@ private fun StepperRow(
                 Icon(
                     imageVector = SimpIcons.Remove,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = Color.White,
                 )
             }
             Surface(
-                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                color = Color.White.copy(alpha = 0.16f),
                 shape = RoundedCornerShape(10.dp),
             ) {
-                Text(
-                    text = value.toString(),
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                    style = typo().titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
+                BasicTextField(
+                    value = text,
+                    onValueChange = { input -> text = input.filter { it.isDigit() }.take(4) },
+                    textStyle = typo().titleMedium.copy(color = Color.White),
+                    singleLine = true,
+                    cursorBrush = SolidColor(Color.White),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done,
+                    ),
+                    keyboardActions = KeyboardActions(onDone = { commit() }),
+                    modifier = Modifier
+                        .width(68.dp)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .onFocusChanged { state ->
+                            if (focused && !state.isFocused) commit()
+                            focused = state.isFocused
+                        },
                 )
             }
             IconButton(onClick = { onValueChange(value + 1) }) {
                 Icon(
                     imageVector = SimpIcons.Add,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = Color.White,
                 )
             }
         }

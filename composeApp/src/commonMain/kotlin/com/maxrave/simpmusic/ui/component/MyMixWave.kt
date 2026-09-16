@@ -16,6 +16,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.PI
@@ -27,13 +29,22 @@ import kotlin.math.sin
 /**
  * The animated field behind the "My Mix" hero.
  *
- * The motion is driven by a clock that only ever accumulates: an earlier version wrapped a phase from
- * 0 to 2*pi, which restarted with a visible jerk every loop because the per-layer phase multipliers
- * were not integers. Dancing to the music is a separate, additive layer — while [isPlaying] the field
- * lifts and a beat pulse (fast attack, exponential tail) rides both the glow and the wobble.
+ * A stack of soft, heavily blurred clouds rather than a set of drawn rings: each layer is a wobbling
+ * closed path filled with a radial gradient that fades to nothing, so only their overlap is visible
+ * and the result reads as an out-of-focus figure instead of a shape with an outline. Nothing is
+ * blurred with [Modifier.blur] on purpose — that is a no-op below Android 12 — the softness is all in
+ * the gradient falloff.
  *
- * @param isActive false freezes the drift, leaving a still, static field.
- * @param isPlaying true adds the beat pulse and the higher energy the playing state deserves.
+ * Motion is driven by a clock that only ever accumulates: an earlier version wrapped a phase from 0
+ * to 2*pi, which restarted with a visible jerk every loop because the per-layer phase multipliers
+ * were not integers.
+ *
+ * [isPlaying] does three things: it fades the field in from grey to the artwork's colours, it scales
+ * the wobble and the drift up, and it adds a beat pulse (instant attack, exponential tail) on top of
+ * the glow. Pressing pause leaves a grey, nearly still field; nothing snaps, because the level is
+ * animated.
+ *
+ * @param isActive false leaves the field completely still.
  * @param fullBleed draws the field over the whole modifier instead of a square of [size].
  */
 @Composable
@@ -58,7 +69,8 @@ fun MyMixWave(
         }
     }
 
-    // Level changes fade in and out, so pressing play never snaps the field.
+    // Level changes fade in and out, so pressing play never snaps the field. It is also what turns
+    // the field grey: at level 0 every colour collapses onto its own luminance.
     val energy by animateFloatAsState(
         targetValue = if (isPlaying) 1f else 0f,
         animationSpec = tween(durationMillis = 700, easing = FastOutSlowInEasing),
@@ -68,88 +80,116 @@ fun MyMixWave(
     Canvas(modifier = if (fullBleed) modifier else modifier.size(size)) {
         val t = clock.value
         val idle = if (isActive) 1f else 0f
-        val level = energy
+        val level = energy * idle
+
+        val greyTone = colorPrimary.luminance()
+        val grey = Color(greyTone, greyTone, greyTone, 1f)
+        val softPrimary = lerp(grey, colorPrimary, level)
+        val softSecondary = lerp(grey, colorSecondary, level)
 
         val center = if (fullBleed) {
-            Offset(this.size.width / 2f, this.size.height * 0.30f)
+            Offset(this.size.width / 2f, this.size.height * 0.40f)
         } else {
             Offset(this.size.width / 2f, this.size.height / 2f)
         }
         val radius = if (fullBleed) {
-            max(this.size.width, this.size.height) * 0.62f
+            max(this.size.width, this.size.height) * 0.58f
         } else {
             minOf(this.size.width, this.size.height) / 2f
         }
 
         // One beat every 60/bpm seconds: instant attack, exponential tail.
         val beat = (t * bpm / 60f) % 1f
-        val pulse = exp(-7f * beat) * level
+        val pulse = exp(-6f * beat) * level
 
-        // A slow swell that never restarts, so an idle field still breathes.
-        val breath = 1f + 0.05f * sin(t * 2f * (PI.toFloat() / 2.8f)) * idle
-        val scale = breath + 0.05f * pulse
+        // Everything that moves slows to a crawl when the music stops.
+        val life = 0.22f + 0.78f * level
+        val breath = 1f + 0.035f * sin(t * 0.8f) * life
+        val drift = radius * 0.11f * life
 
-        val glowRadius = radius * (1.22f + 0.18f * pulse + 0.06f * level)
+        // A wide, very soft wash so the figure never looks pasted on the background.
+        val washRadius = radius * (1.5f + 0.10f * pulse)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    colorPrimary.copy(alpha = (0.20f + 0.34f * pulse) * idle),
-                    colorSecondary.copy(alpha = (0.10f + 0.18f * pulse) * idle),
+                    softPrimary.copy(alpha = (0.16f + 0.22f * pulse) * idle),
+                    softSecondary.copy(alpha = 0.08f * idle),
                     Color.Transparent,
                 ),
                 center = center,
-                radius = glowRadius,
+                radius = washRadius,
             ),
-            radius = glowRadius,
+            radius = washRadius,
             center = center,
         )
 
-        // The blob centre drifts too, on its own slow orbit.
-        val blobCenter = Offset(
-            center.x + sin(t * 0.19f) * radius * 0.06f,
-            center.y + cos(t * 0.13f) * radius * 0.06f,
+        // The bright heart of the figure.
+        val coreRadius = radius * 0.55f * breath * (1f + 0.10f * pulse)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    lerp(softPrimary, Color.White, 0.30f + 0.25f * pulse)
+                        .copy(alpha = (0.18f + 0.24f * pulse) * idle),
+                    softSecondary.copy(alpha = 0.10f * idle),
+                    Color.Transparent,
+                ),
+                center = center,
+                radius = coreRadius,
+            ),
+            radius = coreRadius,
+            center = center,
         )
 
-        val layers = listOf(
-            Triple(3f, 0.10f, 0.34f),
-            Triple(5f, 0.06f, 0.26f),
-            Triple(7f, 0.04f, 0.18f),
+        // radiusFactor, wobble amplitude, alpha — the outer clouds are the softest.
+        val clouds = listOf(
+            Triple(0.98f, 0.20f, 0.30f),
+            Triple(0.80f, 0.26f, 0.27f),
+            Triple(0.62f, 0.32f, 0.24f),
+            Triple(0.45f, 0.38f, 0.20f),
+            Triple(0.30f, 0.44f, 0.16f),
         )
-        layers.forEachIndexed { index, (frequency, amplitude, alpha) ->
-            val blobRadius = radius * (0.78f - index * 0.11f) * scale
-            val phase = t * (0.35f + index * 0.12f)
+
+        clouds.forEachIndexed { index, (radiusFactor, wobbleAmp, alpha) ->
+            val phase = t * (0.16f + index * 0.05f) * life + index * 1.9f
+            val cloudCenter = Offset(
+                center.x + cos(phase * 1.13f) * drift * (1f - index * 0.12f),
+                center.y + sin(phase * 0.87f) * drift * (1f - index * 0.12f),
+            )
+            val cloudRadius = radius * radiusFactor * breath * (1f + 0.05f * pulse)
+            val amplitude = wobbleAmp * intensity * (0.20f + 0.80f * level)
 
             val path = Path()
-            val steps = 220
+            val steps = 180
             for (i in 0..steps) {
                 val theta = (i.toFloat() / steps) * 2f * PI.toFloat()
-                // The long wave carries the shape; the short one is the beat, so it only exists
-                // while the music plays.
+                // Three harmonics so the outline never repeats visibly; the two faster ones grow with
+                // the beat, which is what makes the figure "dance" rather than just drift.
                 val wobble =
-                    amplitude * intensity * idle * (0.55f + 0.45f * level) *
-                        sin(frequency * theta + phase) +
-                    amplitude * intensity * idle * (0.30f + 0.70f * pulse) *
-                        sin((frequency + 2f) * theta - phase * 2f)
-                val r = blobRadius * (1f + wobble)
-                val x = blobCenter.x + r * cos(theta)
-                val y = blobCenter.y + r * sin(theta)
+                    amplitude * sin(3f * theta + phase) +
+                    amplitude * 0.50f * sin(5f * theta - phase * 1.6f) +
+                    amplitude * (0.20f + 0.30f * pulse) * sin(8f * theta + phase * 2.3f)
+                val r = cloudRadius * (1f + wobble)
+                val x = cloudCenter.x + r * cos(theta)
+                val y = cloudCenter.y + r * sin(theta)
                 if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
             }
             path.close()
+
+            // Each cloud drifts through the palette on its own offset, which is the shimmer.
+            val shimmer = (sin(t * 0.33f + index * 1.2f) + 1f) / 2f
+            val colorStart = lerp(softPrimary, softSecondary, shimmer)
+            val colorMid = lerp(softSecondary, Color.White, 0.30f * level)
 
             drawPath(
                 path = path,
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        colorPrimary.copy(alpha = alpha * (0.85f + 0.40f * pulse) * idle),
-                        colorSecondary.copy(alpha = alpha * 0.8f * idle),
+                        colorStart.copy(alpha = alpha * (0.90f + 0.50f * pulse) * idle),
+                        colorMid.copy(alpha = alpha * 0.55f * idle),
                         Color.Transparent,
                     ),
-                    center = Offset(
-                        blobCenter.x - blobRadius * 0.25f,
-                        blobCenter.y - blobRadius * 0.25f,
-                    ),
-                    radius = blobRadius * 1.6f,
+                    center = cloudCenter,
+                    radius = cloudRadius * 1.5f,
                 ),
             )
         }

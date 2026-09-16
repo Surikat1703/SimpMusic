@@ -383,6 +383,11 @@ fun App(
     }
 
     val navBackStackEntry by navController.currentBackStackEntryAsState()
+    // Fork: the My Mix tab carries a player of its own, so the stock mini player is hidden there —
+    // otherwise the two would stack and say the same thing twice.
+    val isOnMixTab = navBackStackEntry?.destination?.hierarchy?.any {
+        it.hasRoute(MixForYouDestination::class)
+    } == true
     LaunchedEffect(navBackStackEntry) {
         Logger.d("MainActivity", "Current destination: ${navBackStackEntry?.destination?.route}")
         if (navBackStackEntry?.destination?.route?.contains("FullscreenDestination") == true) {
@@ -466,7 +471,9 @@ fun App(
                     ) {
                         Column {
                             AnimatedVisibility(
-                                isShowMiniPlayer && isLiquidGlassEnabled == DataStoreManager.FALSE,
+                                isShowMiniPlayer &&
+                                    isLiquidGlassEnabled == DataStoreManager.FALSE &&
+                                    !isOnMixTab,
                                 enter = fadeIn() + slideInHorizontally(),
                                 exit = fadeOut(),
                             ) {
@@ -603,7 +610,7 @@ fun App(
                                     Modifier
                                         .padding(innerPadding)
                                         .align(Alignment.BottomCenter),
-                                visible = isShowMiniPlayer && isTablet && !isInFullscreen,
+                                visible = isShowMiniPlayer && isTablet && !isInFullscreen && !isOnMixTab,
                                 enter = fadeIn() + slideInHorizontally(),
                                 exit = fadeOut(),
                             ) {
