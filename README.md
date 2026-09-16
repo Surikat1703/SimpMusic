@@ -16,6 +16,9 @@ A FOSS YouTube Music client for Android and Desktop with many features from<br>S
 <a href="https://simpmusic.org/nightly-download"><img src="https://github.com/maxrave-dev/SimpMusic/actions/workflows/android.yml/badge.svg"></a><br/> <a href="https://simpmusic.org/nightly-download"><img src="https://raw.githubusercontent.com/NeoApplications/Neo-Backup/034b226cea5c1b30eb4f6a6f313e4dadcbb0ece4/badge_github.png" width="200"></a> 
 </div>  
 
+> [!IMPORTANT]
+> **This is a personal fork of [maxrave-dev/SimpMusic](https://github.com/maxrave-dev/SimpMusic)**, maintained by [Surikat1703](https://github.com/Surikat1703). It tracks upstream `dev` and adds a small set of personal changes; the licence stays GPL-3.0. The upstream README is left untouched below so that merging upstream stays a one-file change — **see [FORK.md](FORK.md) for what this fork does differently and where its builds are published.**
+
 > SimpMusic is available on Desktop now!
 >
 > [kotlin-footguns](https://github.com/maxrave-dev/kotlin-footguns) — the Kotlin, Compose Multiplatform and desktop JVM traps this project ran into the hard way. Star it if it saves you a night.

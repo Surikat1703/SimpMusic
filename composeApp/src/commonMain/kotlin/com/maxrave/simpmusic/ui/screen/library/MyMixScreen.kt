@@ -61,6 +61,7 @@ import coil3.compose.AsyncImage
 import com.kmpalette.loader.rememberNetworkLoader
 import com.kmpalette.rememberDominantColorState
 import com.maxrave.common.Config
+import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.manager.DataStoreManager
@@ -70,7 +71,7 @@ import com.maxrave.domain.repository.PlaylistRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.simpmusic.extension.getStringBlocking
-import com.maxrave.simpmusic.ui.component.MyMixWave
+import com.maxrave.simpmusic.ui.component.MyMixVisualizer
 import com.maxrave.simpmusic.ui.component.QueueBottomSheet
 import com.maxrave.simpmusic.ui.icon.Add
 import com.maxrave.simpmusic.ui.icon.Pause
@@ -131,13 +132,15 @@ import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.connectArtists
 import com.maxrave.domain.utils.toArrayListTrack
 import com.maxrave.simpmusic.extension.formatDuration
-import com.maxrave.simpmusic.ui.component.HeartCheckBox
+import com.maxrave.simpmusic.ui.icon.Check
+import com.maxrave.simpmusic.ui.icon.PlaylistAdd
 import com.maxrave.simpmusic.ui.icon.Close
 import com.maxrave.simpmusic.ui.icon.SkipNext
 import com.maxrave.simpmusic.ui.icon.SkipPrevious
 import com.maxrave.simpmusic.ui.icon.UnfoldMore
 import com.maxrave.simpmusic.ui.icon.MoreVert
 import simpmusic.composeapp.generated.resources.my_mix_all_moods
+import simpmusic.composeapp.generated.resources.my_mix_add_to_likes
 import kotlin.time.Clock
 
 /**
@@ -169,24 +172,40 @@ object MyMixPrefs {
 private const val LIKES_MOOD_ID = "liked"
 
 /**
- * Fork: "Микс для вечеринки 2" -> "Для вечеринки".
+ * Fork: the browseId of the YouTube "Liked Music" playlist, used only as the fallback source for the
+ * "Любимые треки" pill when the local likes are empty. The repository prepends its own "VL".
+ */
+private const val YT_LIKED_PLAYLIST_ID = "LM"
+
+/**
+ * Fork: "Мой супермикс" -> "" and "Микс для вечеринки 2" -> "Для вечеринки".
  *
- * Two things get in the way of a mood row. YouTube appends an index to duplicated entries, so the
- * same mood arrives as "… 1", "… 2" and "… 3"; and the shelf repeats the word "микс"/"mix" in every
- * single title, which is noise when the whole row is mixes. The index is stripped from either end and
- * so is a leading or trailing "микс"/"mix" — only at the edges, so a "Remix" in the middle is left
- * alone. If that empties the name, the de-numbered original is kept.
+ * Three things get in the way of a mood row. YouTube appends an index to duplicated entries, so the
+ * same mood arrives as "… 1", "… 2" and "… 3"; the shelf repeats "супермикс" and "микс"/"mix" in
+ * every single title, which is noise when the whole row is mixes; and the personal mix is really
+ * called "Мой супермикс", which cleans down to nothing but a pronoun and is not a mood at all.
+ *
+ * The index goes first, then the mix words, then the bare "мой"/"my" — and the result is returned as
+ * it is, EMPTY INCLUDED, because an empty name is exactly how the caller recognises an entry that is
+ * not a mood. Callers that need a label anyway fall back to the raw title themselves.
  */
 private fun cleanMoodName(raw: String): String {
     val deNumbered = raw.replace(Regex("""\s*[#№]?\s*\d+\s*$"""), "").trim()
-    val stripped = deNumbered
-        .replace(Regex("""^\s*(миксы|микс|mix)\s*""", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("""\s+(миксы|микс|mix)\s*$""", RegexOption.IGNORE_CASE), "")
+    return deNumbered
+        // "Мой супермикс": the noise word goes first, so what is left behind is only a pronoun.
+        .replace(Regex("""(?i)\bсупер\s*-?\s*микс(а|ы|ов)?\b"""), " ")
+        .replace(Regex("""(?i)\bsuper\s*-?\s*mix(es)?\b"""), " ")
+        // Every title on this shelf carries the word "микс"/"mix"; the whole row is mixes, so it is
+        // noise — and it is removed wherever it sits, not only at the edges, because "Микс для
+        // вечеринки" keeps it in the middle.
+        .replace(Regex("""(?i)\bмиксы\b|\bмикса\b|\bмикс\b|\bmixes\b|\bmix\b"""), " ")
+        // A mood that is only "мой"/"my" is the personal mix rather than a mood, so it must end up
+        // empty here and be dropped by the caller.
+        .replace(Regex("""(?i)\bмой\b|\bмоя\b|\bмоё\b|\bмои\b|\bmy\b"""), " ")
         .replace(Regex("""\s{2,}"""), " ")
         .trim()
-        .trim('-', '–', '—', ':', ',', '«', '»', '(', ')')
+        .trim('-', '–', '—', ':', ',', '«', '»', '(', ')', '+', '·')
         .trim()
-    return stripped.ifBlank { deNumbered }.ifBlank { raw }
 }
 
 /**
@@ -305,8 +324,6 @@ fun MyMixScreen(
     // it is the local favourites, which is why "Без настроения" became "Любимые треки".
     var startedMixId by remember { mutableStateOf<String?>(null) }
     val isLikesSelected = selectedMoodId == LIKES_MOOD_ID
-    val heroSourceKey = if (isLikesSelected) LIKES_MOOD_ID else selectedMix?.browseId
-    val isSelectedMixPlaying = controllerState.isPlaying && startedMixId == heroSourceKey
 
     val heroDominant = if (startedMixId != null && nowPlaying?.songEntity != null) {
         playingDominant
@@ -365,15 +382,27 @@ fun MyMixScreen(
         }
     }
 
-    // Fork: the "Любимые треки" pill. It plays the app's own liked songs, which live in the local
-    // database and need no network at all — so this entry keeps working offline and behind a VPN.
+    // Fork: the "Любимые треки" pill. The app's own liked songs live in the local database and need
+    // no network at all, so they always come first and this entry keeps working offline and behind a
+    // VPN. Only when there are none does it fall back to the account's Liked Music playlist — without
+    // that fallback the pill answered "sign in" to a user who was signed in all along.
     fun playLikes() {
         if (isPreparing) return
         isPreparing = true
         playFailed = false
         scope.launch {
             try {
-                val tracks = songRepository.getLikedSongs().first().toArrayListTrack()
+                var tracks = songRepository.getLikedSongs().first().toArrayListTrack()
+                if (tracks.isEmpty()) {
+                    val fetched = withTimeoutOrNull(30_000) {
+                        playlistRepository.getPlaylistData(
+                            playlistId = YT_LIKED_PLAYLIST_ID,
+                            viewString = getStringBlocking(Res.string.view_count),
+                        ).first()
+                    }
+                    val pair = (fetched as? Resource.Success<Pair<PlaylistBrowse, String?>>)?.data
+                    tracks = ArrayList<Track>(pair?.first?.tracks.orEmpty())
+                }
                 if (tracks.isEmpty()) {
                     playFailed = true
                     return@launch
@@ -401,17 +430,18 @@ fun MyMixScreen(
             .fillMaxSize()
             .background(Color(0xFF0B0B0F)),
     ) {
-        // The wave is the page, not a decoration inside it: it runs under the whole screen and the
-        // list scrolls over it.
-        MyMixWave(
+        // The field is the page, not a decoration inside it: it runs under the whole screen and the
+        // list scrolls over it. On Android 13+ this is a GPU shader; older phones and Desktop get the
+        // Canvas blob field, and both are fed the same parameters.
+        MyMixVisualizer(
             colorPrimary = fieldColor,
             colorSecondary = waveSecondary,
             modifier = Modifier.fillMaxSize(),
-            fullBleed = true,
-            isActive = true,
             // The field answers to the transport, not to this tab's own player: music playing from
             // anywhere lights it up, and pausing anywhere drops it back to grey.
             isPlaying = controllerState.isPlaying,
+            amplitude = controllerState.volume,
+            bpm = 96f,
         )
 
         // Only the bottom of the page is scrimmed, and only so the pills and the cache card stay
@@ -470,7 +500,10 @@ fun MyMixScreen(
                     // player itself once this tab has started a queue — the stock mini player is hidden
                     // on this tab, so this IS the player here.
                     val nowSong = nowPlaying?.songEntity
-                    if (startedMixId != null && nowSong != null) {
+                    // While a new selection is loading the player would still be showing the previous
+                    // track, so the loading state wins: what is on screen must describe what the user
+                    // has just chosen, not what is still playing.
+                    if (startedMixId != null && nowSong != null && !isPreparing) {
                         MyMixNowPlaying(
                             song = nowSong,
                             isPlaying = controllerState.isPlaying,
@@ -502,6 +535,13 @@ fun MyMixScreen(
                                 maxLines = 3,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            if (isPreparing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(34.dp),
+                                    strokeWidth = 3.dp,
+                                    color = Color.White,
+                                )
+                            }
                             if (playFailed) {
                                 Text(
                                     text = stringResource(Res.string.my_mix_empty),
@@ -537,6 +577,8 @@ fun MyMixScreen(
                                             scope.launch {
                                                 dataStoreManager.putString(MyMixPrefs.MOOD_ID, LIKES_MOOD_ID)
                                             }
+                                            // Picking a mood IS the start action here, so it plays at once.
+                                            playLikes()
                                         },
                                     )
                                 }
@@ -549,6 +591,7 @@ fun MyMixScreen(
                                             scope.launch {
                                                 dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId)
                                             }
+                                            playMix(mix)
                                         },
                                     )
                                 }
@@ -565,10 +608,10 @@ fun MyMixScreen(
 
             }
 
-            // The big button starts whatever is selected; it steps aside once that selection is the
-            // thing playing, because the player above carries its own transport.
-            val startedThisMix = startedMixId != null && startedMixId == heroSourceKey
-            if (!startedThisMix) {
+            // The big button is the FIRST start and nothing else: choosing a mood starts it immediately,
+            // so once anything is playing this goes away instead of offering a second play button right
+            // under the player's own transport.
+            if (startedMixId == null) {
                 item(key = "my_mix_play") {
                     Box(
                         modifier = Modifier.fillMaxWidth(),
@@ -576,11 +619,7 @@ fun MyMixScreen(
                     ) {
                         FilledIconButton(
                             onClick = {
-                                when {
-                                    startedThisMix -> sharedViewModel.onUIEvent(UIEvent.PlayPause)
-                                    isLikesSelected -> playLikes()
-                                    else -> selectedMix?.let { playMix(it) }
-                                }
+                                if (isLikesSelected) playLikes() else selectedMix?.let { playMix(it) }
                             },
                             modifier = Modifier.size(84.dp),
                             enabled = !isPreparing && (isLikesSelected || selectedMix != null),
@@ -599,7 +638,7 @@ fun MyMixScreen(
                                 )
                             } else {
                                 Icon(
-                                    imageVector = if (isSelectedMixPlaying) SimpIcons.Pause else SimpIcons.PlayArrow,
+                                    imageVector = SimpIcons.PlayArrow,
                                     contentDescription = stringResource(Res.string.my_mix_play),
                                     modifier = Modifier.size(42.dp),
                                 )
@@ -651,6 +690,7 @@ fun MyMixScreen(
                                     onClick = {
                                         selectedMoodId = mix.browseId
                                         scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
+                                        playMix(mix)
                                     },
                                 )
                             }
@@ -668,6 +708,12 @@ fun MyMixScreen(
                     selectedMoodId = id
                     scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, id) }
                     showAllMoods = false
+                    // Same rule as the row itself: choosing a mood starts it.
+                    if (id == LIKES_MOOD_ID) {
+                        playLikes()
+                    } else {
+                        allMixes.firstOrNull { it.browseId == id }?.let { playMix(it) }
+                    }
                 },
                 onDismiss = { showAllMoods = false },
             )
@@ -734,7 +780,7 @@ private fun MyMixMoodPicker(
                     }
                     items(items = moods, key = { it.browseId }) { mix ->
                         MoodGridTile(
-                            title = cleanMoodName(mix.title),
+                            title = cleanMoodName(mix.title).ifBlank { mix.title },
                             artwork = mix.thumbnails.lastOrNull()?.url,
                             selected = mix.browseId == selectedId,
                             onClick = { onSelect(mix.browseId) },
@@ -867,18 +913,22 @@ private fun MyMixNowPlaying(
             } else {
                 0f
             }
+            val fraction = (if (isSliding) sliderValue / 100f else progress).coerceIn(0f, 1f)
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .height(44.dp)
+                    .height(48.dp)
                     .clip(RoundedCornerShape(50))
                     .background(accent.copy(alpha = 0.26f)),
-                contentAlignment = Alignment.Center,
             ) {
+                // Fork: the fill is pinned to the START of the pill. A fraction-width child of a Box
+                // with Center alignment grows out of the middle, which is exactly why the bar looked
+                // like it started halfway across.
                 Box(
                     modifier = Modifier
+                        .align(Alignment.CenterStart)
                         .fillMaxHeight()
-                        .fillMaxWidth(if (isSliding) sliderValue / 100f else progress)
+                        .fillMaxWidth(fraction)
                         .background(
                             Brush.horizontalGradient(
                                 listOf(accent.copy(alpha = 0.34f), accent.copy(alpha = 0.62f)),
@@ -889,7 +939,11 @@ private fun MyMixNowPlaying(
                     text = "${formatDuration(timeline.current)} / ${formatDuration(timeline.total)}",
                     style = typo().bodyMedium,
                     color = Color.White,
+                    modifier = Modifier.align(Alignment.Center),
                 )
+                // The slider is the drag handle: visible thumb, invisible tracks, because the pill
+                // behind it already is the track. It fills the whole capsule so the drag target is the
+                // bar the user can actually see.
                 Slider(
                     value = sliderValue,
                     onValueChange = { value ->
@@ -900,19 +954,23 @@ private fun MyMixNowPlaying(
                         isSliding = false
                         onSeek(sliderValue)
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxSize(),
                     colors = SliderDefaults.colors(
-                        thumbColor = Color.Transparent,
+                        thumbColor = Color.White,
                         activeTrackColor = Color.Transparent,
                         inactiveTrackColor = Color.Transparent,
                     ),
                 )
             }
-            HeartCheckBox(
-                checked = isLiked,
-                size = 32,
-                tint = Color.White,
-            ) { onToggleLike() }
+            // Fork: this is "add to Liked tracks", not a plain heart — it is the same action the like
+            // button performs, labelled the way YouTube Music names the target list.
+            IconButton(onClick = onToggleLike) {
+                Icon(
+                    imageVector = if (isLiked) SimpIcons.Check else SimpIcons.PlaylistAdd,
+                    contentDescription = stringResource(Res.string.my_mix_add_to_likes),
+                    tint = Color.White,
+                )
+            }
             var showQueue by remember { mutableStateOf(false) }
             IconButton(onClick = { showQueue = true }) {
                 Icon(
@@ -1013,7 +1071,7 @@ private fun MixTile(
             contentDescription = mix.title,
         )
         Text(
-            text = cleanMoodName(mix.title),
+            text = cleanMoodName(mix.title).ifBlank { mix.title },
             style = typo().bodyMedium,
             color = if (isSelected) Color.White else Color.White.copy(alpha = 0.72f),
             maxLines = 2,
