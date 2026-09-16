@@ -26,6 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.firstOrNull
 import multiplatform.network.cmptoast.AppContext
 import okhttp3.OkHttpClient
 import okio.FileSystem
@@ -39,6 +40,8 @@ import org.koin.core.logger.Level
 import org.simpmusic.crashlytics.configCrashlytics
 import org.simpmusic.lastfm.configLastfm
 import java.lang.reflect.Field
+
+private const val FORK_LOCAL_TRACKING_DEFAULT = "fork_local_tracking_default"
 
 class SimpMusicApplication :
     Application(),
@@ -86,6 +89,16 @@ class SimpMusicApplication :
         myMixCacheScheduler = MyMixCacheScheduler(this, dataStoreManager)
         applicationScope.launch {
             myMixCacheScheduler.observeAndSchedule()
+        }
+
+        // Fork: the Analytics tab only exists while local tracking is on, and a fresh install starts
+        // with it off — which reads as "the statistics button disappeared". Enable it once, and leave
+        // it alone afterwards, so switching it off in Settings -> Listening history sticks.
+        applicationScope.launch {
+            if (dataStoreManager.getString(FORK_LOCAL_TRACKING_DEFAULT).firstOrNull().isNullOrEmpty()) {
+                dataStoreManager.setLocalTrackingEnabled(true)
+                dataStoreManager.putString(FORK_LOCAL_TRACKING_DEFAULT, "1")
+            }
         }
 
         CaocConfig.Builder

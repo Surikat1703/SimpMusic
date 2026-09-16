@@ -1,5 +1,6 @@
 package com.maxrave.simpmusic.ui.screen.library
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -9,7 +10,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -25,10 +25,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,9 +44,15 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
@@ -53,15 +62,13 @@ import com.maxrave.common.Config
 import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.manager.DataStoreManager
-import com.maxrave.domain.mediaservice.handler.QueueData
 import com.maxrave.domain.mediaservice.handler.PlaylistType as QueuePlaylistType
+import com.maxrave.domain.mediaservice.handler.QueueData
 import com.maxrave.domain.repository.PlaylistRepository
-import com.maxrave.domain.utils.LocalResource
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.simpmusic.extension.getStringBlocking
 import com.maxrave.simpmusic.ui.component.MyMixWave
-import com.maxrave.simpmusic.ui.component.SettingItem
 import com.maxrave.simpmusic.ui.icon.Add
 import com.maxrave.simpmusic.ui.icon.PlayArrow
 import com.maxrave.simpmusic.ui.icon.Remove
@@ -77,7 +84,7 @@ import io.ktor.http.Url
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlin.time.Clock
+import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import simpmusic.composeapp.generated.resources.Res
@@ -98,13 +105,15 @@ import simpmusic.composeapp.generated.resources.my_mix_preparing
 import simpmusic.composeapp.generated.resources.my_mix_subtitle
 import simpmusic.composeapp.generated.resources.radio
 import simpmusic.composeapp.generated.resources.view_count
-import org.jetbrains.compose.resources.stringResource
+import kotlin.time.Clock
 
 /**
- * Raw-string preferences of the My Mix tab. They are deliberately plain DataStore keys
- * (`DataStoreManager.getString` / `putString`) rather than typed ones: those live in the `core`
- * submodule, and the fork keeps every edit out of it so upstream merges stay a single-repo
- * operation. The scheduled cache worker in `androidApp` reads the same strings.
+ * Fork: where the "My Mix" tab keeps its settings.
+ *
+ * The keys are raw DataStore strings (`DataStoreManager.getString` / `putString`) rather than typed
+ * ones: those live in the `core` submodule, and the fork keeps every edit out of it so upstream
+ * merges stay a single-repo operation. The scheduled cache worker in `androidApp` reads the same
+ * strings.
  */
 object MyMixPrefs {
     const val MOOD_ID = "my_mix_mood_id"
@@ -145,13 +154,26 @@ fun MyMixScreen(
     val allMixes = mixResource.data.orEmpty()
     val isLoadingMixes = mixResource.data == null && mixResource.message == null
 
+    // Fork: this tab is now the only way into the mixes, so it has to start the fetch the original
+    // grid used to trigger itself — without this the screen sits on "Loading" forever.
+    LaunchedEffect(Unit) {
+        if (viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
+            viewModel.getYouTubeMixedForYou()
+        }
+    }
+
     val defaultMix = remember(allMixes) {
         allMixes.firstOrNull { it.browseId.startsWith("RDTM") && it.title.contains("super", true) }
             ?: allMixes.firstOrNull { it.browseId.startsWith("RDTM") }
             ?: allMixes.firstOrNull()
     }
-    val moodMixes = remember(allMixes) {
+    val nameFiltered = remember(allMixes) {
         allMixes.filter { it.title.contains("mix", true) || it.title.contains("микс", true) }
+    }
+    // Every entry of "Mixed for you" is a mix, so the row is never empty just because none of them
+    // happens to carry the word in its title.
+    val moodMixes = remember(allMixes, nameFiltered) {
+        nameFiltered.ifEmpty { allMixes }
     }
 
     var selectedMoodId by remember { mutableStateOf<String?>(null) }
@@ -170,7 +192,7 @@ fun MyMixScreen(
     val backgroundColor = MaterialTheme.colorScheme.background
     val networkLoader = rememberNetworkLoader(HttpClient(CIO))
     val dominantColorState = rememberDominantColorState(
-        defaultColor = backgroundColor,
+        defaultColor = MaterialTheme.colorScheme.primary,
         defaultOnColor = backgroundColor,
         loader = networkLoader,
     )
@@ -178,17 +200,22 @@ fun MyMixScreen(
     LaunchedEffect(artworkUrl) {
         artworkUrl?.let { dominantColorState.updateFrom(Url(it)) }
     }
-    val animatedWaveColor by animateColorAsState(
+    val dominant by animateColorAsState(
         targetValue = dominantColorState.color,
         animationSpec = tween(700),
     )
+    // A near-white cover would paint a near-white field, so a pale colour is swapped for the app
+    // accent: the hero has to stay saturated for white text to sit on it.
+    val fieldColor = if (dominant.luminance() > 0.72f) MaterialTheme.colorScheme.primary else dominant
     val waveSecondary = MaterialTheme.colorScheme.primary
 
     var isPreparing by remember { mutableStateOf(false) }
+    var playFailed by remember { mutableStateOf(false) }
 
     fun playMix(mix: PlaylistsResult) {
         if (isPreparing) return
         isPreparing = true
+        playFailed = false
         scope.launch {
             try {
                 val isRadio = mix.browseId.isRadioPlaylistId()
@@ -210,7 +237,10 @@ fun MyMixScreen(
                 }
                 val pair = (fetched as? Resource.Success<Pair<PlaylistBrowse, String?>>)?.data
                 val tracks = pair?.first?.tracks.orEmpty()
-                if (tracks.isEmpty()) return@launch
+                if (tracks.isEmpty()) {
+                    playFailed = true
+                    return@launch
+                }
                 sharedViewModel.setQueueData(
                     QueueData.Data(
                         listTracks = tracks,
@@ -228,179 +258,225 @@ fun MyMixScreen(
         }
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        state = listState,
-        contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
-            top = innerPadding.calculateTopPadding() + 12.dp,
-            bottom = innerPadding.calculateBottomPadding() + 120.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    0f to fieldColor,
+                    0.42f to fieldColor.copy(alpha = 0.72f),
+                    0.78f to backgroundColor,
+                ),
+            ),
     ) {
-        item(key = "my_mix_header") {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(Res.string.my_mix),
-                        style = typo().titleLarge,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    Text(
-                        text = stringResource(Res.string.my_mix_subtitle),
-                        style = typo().bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                IconButton(onClick = { navController.navigate(MixForYouOriginalDestination) }) {
-                    Icon(
-                        imageVector = SimpIcons.Sensors,
-                        contentDescription = stringResource(Res.string.my_mix_open_original),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
+        // The wave is the page, not a decoration inside it: it runs under the whole screen and the
+        // list scrolls over it.
+        MyMixWave(
+            colorPrimary = fieldColor,
+            colorSecondary = waveSecondary,
+            modifier = Modifier.fillMaxSize(),
+            fullBleed = true,
+            isActive = !isPreparing,
+        )
 
-        item(key = "my_mix_hero") {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(320.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                MyMixWave(
-                    colorPrimary = animatedWaveColor,
-                    colorSecondary = waveSecondary,
-                    size = 300.dp,
-                    isActive = !isPreparing,
-                )
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = selectedMix?.title.orEmpty(),
-                        style = typo().titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    FilledIconButton(
-                        onClick = { selectedMix?.let { playMix(it) } },
-                        modifier = Modifier.size(76.dp),
-                        enabled = selectedMix != null && !isPreparing,
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            contentPadding = PaddingValues(
+                start = 18.dp,
+                end = 18.dp,
+                top = innerPadding.calculateTopPadding(),
+                bottom = innerPadding.calculateBottomPadding() + 120.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            item(key = "my_mix_hero") {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(470.dp)
+                        .padding(top = 14.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (isPreparing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(30.dp),
-                                strokeWidth = 3.dp,
-                                color = MaterialTheme.colorScheme.onPrimary,
-                            )
-                        } else {
+                        Text(
+                            text = stringResource(Res.string.my_mix),
+                            style = typo().labelLarge,
+                            color = Color.White.copy(alpha = 0.85f),
+                        )
+                        IconButton(onClick = { navController.navigate(MixForYouOriginalDestination) }) {
                             Icon(
-                                imageVector = SimpIcons.PlayArrow,
-                                contentDescription = stringResource(Res.string.my_mix_play),
-                                modifier = Modifier.size(40.dp),
+                                imageVector = SimpIcons.Sensors,
+                                contentDescription = stringResource(Res.string.my_mix_open_original),
+                                tint = Color.White,
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            text = selectedMix?.title ?: stringResource(Res.string.my_mix_subtitle),
+                            style = typo().titleLarge.copy(fontSize = 38.sp, fontWeight = FontWeight.Bold),
+                            color = Color.White,
+                            textAlign = TextAlign.Center,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (playFailed) {
+                            Text(
+                                text = stringResource(Res.string.my_mix_empty),
+                                style = typo().bodyMedium,
+                                color = Color.White.copy(alpha = 0.85f),
+                                textAlign = TextAlign.Center,
+                            )
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(18.dp),
+                    ) {
+                        if (moodMixes.isNotEmpty()) {
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                contentPadding = PaddingValues(horizontal = 2.dp),
+                            ) {
+                                item(key = "no_mood") {
+                                    MoodPill(
+                                        label = stringResource(Res.string.my_mix_no_mood),
+                                        selected = selectedMoodId == null,
+                                        onClick = {
+                                            selectedMoodId = null
+                                            scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, "") }
+                                        },
+                                    )
+                                }
+                                items(items = moodMixes, key = { it.browseId }) { mix ->
+                                    MoodPill(
+                                        label = mix.title,
+                                        selected = mix.browseId == selectedMix?.browseId,
+                                        onClick = {
+                                            selectedMoodId = mix.browseId
+                                            scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
+                        FilledIconButton(
+                            onClick = { selectedMix?.let { playMix(it) } },
+                            modifier = Modifier.size(84.dp),
+                            enabled = selectedMix != null && !isPreparing,
+                            colors = IconButtonDefaults.filledIconButtonColors(
+                                containerColor = Color.White,
+                                contentColor = Color.Black,
+                                disabledContainerColor = Color.White.copy(alpha = 0.55f),
+                                disabledContentColor = Color.Black.copy(alpha = 0.4f),
+                            ),
+                        ) {
+                            if (isPreparing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(32.dp),
+                                    strokeWidth = 3.dp,
+                                    color = Color.Black,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = SimpIcons.PlayArrow,
+                                    contentDescription = stringResource(Res.string.my_mix_play),
+                                    modifier = Modifier.size(42.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!isLoadingMixes && allMixes.isEmpty()) {
+                item(key = "my_mix_empty") {
                     Text(
-                        text = stringResource(
-                            if (isPreparing) Res.string.my_mix_preparing else Res.string.my_mix_play,
-                        ),
+                        text = stringResource(Res.string.my_mix_empty),
                         style = typo().bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-        }
 
-        if (!isLoadingMixes && allMixes.isEmpty()) {
-            item(key = "my_mix_empty") {
-                Text(
-                    text = stringResource(Res.string.my_mix_empty),
-                    style = typo().bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            item(key = "my_mix_cache") {
+                MyMixCacheCard(
+                    dataStoreManager = dataStoreManager,
+                    // The scheduler watches this key and enqueues a one-off forced run, so the manual
+                    // button goes through the same worker as the schedule instead of downloading here.
+                    onRefreshNow = {
+                        scope.launch {
+                            dataStoreManager.putString(
+                                MyMixPrefs.CACHE_REQUEST,
+                                Clock.System.now().toEpochMilliseconds().toString(),
+                            )
+                        }
+                    },
                 )
             }
-        }
 
-        if (moodMixes.isNotEmpty()) {
-            item(key = "my_mix_mood") {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = stringResource(Res.string.my_mix_mood),
-                        style = typo().titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        item(key = "no_mood") {
-                            FilterChip(
-                                selected = selectedMoodId == null,
-                                onClick = {
-                                    selectedMoodId = null
-                                    scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, "") }
-                                },
-                                label = { Text(stringResource(Res.string.my_mix_no_mood)) },
-                            )
-                        }
-                        items(items = moodMixes, key = { it.browseId }) { mix ->
-                            FilterChip(
-                                selected = selectedMoodId == mix.browseId,
-                                onClick = {
-                                    selectedMoodId = mix.browseId
-                                    scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
-                                },
-                                label = { Text(mix.title) },
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        item(key = "my_mix_cache") {
-            MyMixCacheCard(
-                dataStoreManager = dataStoreManager,
-                // The scheduler watches this key and enqueues a one-off forced run, so the manual
-                // button goes through the same worker as the schedule instead of downloading here.
-                onRefreshNow = {
-                    scope.launch {
-                        dataStoreManager.putString(
-                            MyMixPrefs.CACHE_REQUEST,
-                            Clock.System.now().toEpochMilliseconds().toString(),
+            if (allMixes.isNotEmpty()) {
+                item(key = "my_mix_all") {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = stringResource(Res.string.my_mix_all_mixes),
+                            style = typo().titleMedium,
+                            color = MaterialTheme.colorScheme.onBackground,
                         )
-                    }
-                },
-            )
-        }
-
-        if (allMixes.isNotEmpty()) {
-            item(key = "my_mix_all") {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = stringResource(Res.string.my_mix_all_mixes),
-                        style = typo().titleMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        items(items = allMixes, key = { it.browseId }) { mix ->
-                            MixTile(
-                                mix = mix,
-                                isSelected = mix.browseId == selectedMix?.browseId,
-                                onClick = {
-                                    selectedMoodId = mix.browseId
-                                    scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
-                                },
-                            )
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            items(items = allMixes, key = { it.browseId }) { mix ->
+                                MixTile(
+                                    mix = mix,
+                                    isSelected = mix.browseId == selectedMix?.browseId,
+                                    onClick = {
+                                        selectedMoodId = mix.browseId
+                                        scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
+                                    },
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/** A translucent pill for the mood row — the hero is a colour field, so these are white-on-glass. */
+@Composable
+private fun MoodPill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        color = if (selected) Color.White else Color.White.copy(alpha = 0.18f),
+        shape = RoundedCornerShape(50),
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .clickable { onClick() },
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
+            style = typo().bodyMedium,
+            color = if (selected) Color.Black else Color.White,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -413,24 +489,26 @@ private fun MixTile(
     Column(
         modifier = Modifier
             .width(140.dp)
-            .clickable(onClick = onClick),
+            .clip(RoundedCornerShape(18.dp))
+            .clickable { onClick() },
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         AsyncImage(
             model = mix.thumbnails.lastOrNull()?.url,
-            contentDescription = mix.title,
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(18.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            contentDescription = mix.title,
         )
         Text(
             text = mix.title,
             style = typo().bodyMedium,
             color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
             maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
@@ -461,49 +539,66 @@ private fun MyMixCacheCard(
     }
 
     fun setCount(value: Int) {
-        trackCount = value.coerceIn(10, 500)
-        scope.launch { dataStoreManager.putString(MyMixPrefs.CACHE_COUNT, trackCount.toString()) }
+        val clamped = value.coerceIn(10, 500)
+        trackCount = clamped
+        scope.launch { dataStoreManager.putString(MyMixPrefs.CACHE_COUNT, clamped.toString()) }
     }
 
     fun setInterval(value: Int) {
-        intervalDays = value.coerceIn(1, 30)
-        scope.launch { dataStoreManager.putString(MyMixPrefs.CACHE_INTERVAL_DAYS, intervalDays.toString()) }
+        val clamped = value.coerceIn(1, 30)
+        intervalDays = clamped
+        scope.launch { dataStoreManager.putString(MyMixPrefs.CACHE_INTERVAL_DAYS, clamped.toString()) }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(24.dp),
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        SettingItem(
-            title = stringResource(Res.string.my_mix_auto_cache),
-            subtitle = stringResource(Res.string.my_mix_auto_cache_desc),
-            switch = enabled to { setEnabled(it) },
-        )
-        if (enabled) {
-            StepperRow(
-                label = stringResource(Res.string.my_mix_cache_count),
-                value = trackCount,
-                onValueChange = { setCount(it) },
-            )
-            StepperRow(
-                label = stringResource(Res.string.my_mix_cache_interval),
-                value = intervalDays,
-                onValueChange = { setInterval(it) },
-            )
-            Text(
-                text = stringResource(Res.string.my_mix_cache_now),
-                style = typo().bodyMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable { onRefreshNow() }
-                    .padding(vertical = 8.dp),
-            )
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(Res.string.my_mix_auto_cache),
+                        style = typo().titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = stringResource(Res.string.my_mix_auto_cache_desc),
+                        style = typo().bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = enabled, onCheckedChange = { setEnabled(it) })
+            }
+
+            AnimatedVisibility(visible = enabled) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    StepperRow(
+                        label = stringResource(Res.string.my_mix_cache_count),
+                        value = trackCount,
+                        onValueChange = { setCount(it) },
+                    )
+                    StepperRow(
+                        label = stringResource(Res.string.my_mix_cache_interval),
+                        value = intervalDays,
+                        onValueChange = { setInterval(it) },
+                    )
+                    FilledTonalButton(
+                        onClick = onRefreshNow,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(text = stringResource(Res.string.my_mix_cache_now))
+                    }
+                }
+            }
         }
     }
 }
@@ -523,8 +618,12 @@ private fun StepperRow(
             text = label,
             style = typo().bodyLarge,
             color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
         )
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             IconButton(onClick = { onValueChange(value - 1) }) {
                 Icon(
                     imageVector = SimpIcons.Remove,
@@ -532,12 +631,17 @@ private fun StepperRow(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Text(
-                text = value.toString(),
-                style = typo().titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                shape = RoundedCornerShape(10.dp),
+            ) {
+                Text(
+                    text = value.toString(),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    style = typo().titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
             IconButton(onClick = { onValueChange(value + 1) }) {
                 Icon(
                     imageVector = SimpIcons.Add,

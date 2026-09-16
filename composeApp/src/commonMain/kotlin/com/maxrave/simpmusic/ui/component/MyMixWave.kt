@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.sin
 
 /**
@@ -31,6 +32,9 @@ import kotlin.math.sin
  * softness comes from the gradient falloff instead.
  *
  * @param intensity 0f freezes the shape into a circle, 1f is the idle undulation.
+ * @param fullBleed when true the canvas fills whatever the caller sized it to and the blobs grow
+ *   with the larger edge of that box, so the wave reads as a page-sized colour field instead of a
+ *   badge. `size` is ignored in that case.
  */
 @Composable
 fun MyMixWave(
@@ -40,6 +44,7 @@ fun MyMixWave(
     size: Dp = 240.dp,
     isActive: Boolean = true,
     intensity: Float = 1f,
+    fullBleed: Boolean = false,
 ) {
     val transition = rememberInfiniteTransition(label = "myMixWave")
     val phase by transition.animateFloat(
@@ -60,9 +65,17 @@ fun MyMixWave(
         label = "breathe",
     )
 
-    Canvas(modifier = modifier.size(size)) {
-        val center = Offset(this.size.width / 2f, this.size.height / 2f)
-        val radius = minOf(this.size.width, this.size.height) / 2f
+    Canvas(modifier = if (fullBleed) modifier else modifier.size(size)) {
+        val center = if (fullBleed) {
+            Offset(this.size.width / 2f, this.size.height * 0.30f)
+        } else {
+            Offset(this.size.width / 2f, this.size.height / 2f)
+        }
+        val radius = if (fullBleed) {
+            maxOf(this.size.width, this.size.height) * 0.62f
+        } else {
+            minOf(this.size.width, this.size.height) / 2f
+        }
         val scale = if (isActive) breathe else 1f
 
         drawCircle(
