@@ -59,6 +59,9 @@ import simpmusic.composeapp.generated.resources.synced
 import simpmusic.composeapp.generated.resources.syncing
 import simpmusic.composeapp.generated.resources.view_count
 
+// Fork: the browseId of the YouTube "Liked Music" playlist.
+private const val LIKED_PLAYLIST_ID = "LM"
+
 class PlaylistViewModel(
     private val songRepository: SongRepository,
     private val localPlaylistRepository: LocalPlaylistRepository,
@@ -180,8 +183,63 @@ class PlaylistViewModel(
         checkDownloadedPlaylist = null
     }
 
+    /**
+     * Fork: the tracks the device already holds for a playlist — the cached track list plus, for
+     * the YouTube "Liked Music" playlist, every liked and downloaded song. Feeds the screen before
+     * (and instead of) a network response that came back empty or geo-blocked.
+     */
+    private suspend fun localTracksFor(
+        id: String,
+        cachedIds: List<String> = emptyList(),
+    ): List<Track> {
+        val cached = cachedIds.ifEmpty { playlistRepository.getPlaylist(id).firstOrNull()?.tracks.orEmpty() }
+        val fromCache =
+            if (cached.isNotEmpty()) {
+                songRepository.getSongsByListVideoId(cached).firstOrNull().orEmpty()
+            } else {
+                emptyList()
+            }
+        val extras =
+            if (id == LIKED_PLAYLIST_ID) {
+                songRepository.getLikedSongs().firstOrNull().orEmpty() +
+                    songRepository.getDownloadedSongs().firstOrNull().orEmpty()
+            } else {
+                emptyList()
+            }
+        return (fromCache + extras).distinctBy { it.videoId }.map { it.toTrack() }
+    }
+
+    private fun loadLocalFirst(id: String) {
+        viewModelScope.launch {
+            val entity = playlistRepository.getPlaylist(id).firstOrNull()
+            if (entity != null) {
+                _playlistEntity.value = entity
+                if (_uiState.value.data == null) _uiState.value = Success(entity.toLocalPlaylistState())
+            }
+            val local = localTracksFor(id, entity?.tracks.orEmpty())
+            if (local.isNotEmpty() && _tracks.value.isEmpty()) {
+                _tracks.value = local
+            }
+        }
+    }
+
+    private fun PlaylistEntity.toLocalPlaylistState(): PlaylistState =
+        PlaylistState(
+            id = id,
+            title = title,
+            isRadio = false,
+            author = Author(id = "", name = author ?: ""),
+            thumbnail = thumbnails,
+            description = description,
+            trackCount = trackCount,
+            year = year ?: now().year.toString(),
+        )
+
     fun getData(id: String) {
         resetData()
+        // Fork: paint what the device already holds before the network is touched, so a
+        // geo-blocked or VPN-restricted response can never leave the screen blank.
+        loadLocalFirst(id)
         viewModelScope.launch {
             // Check radio
             if (id.isRadioPlaylistId()) {
@@ -213,10 +271,15 @@ class PlaylistViewModel(
                                                 year = data.first.year,
                                             ),
                                     )
-                                _tracks.value = data.first.tracks
+                                // Fork: an empty response must not blank a list we already have.
+                                if (data.first.tracks.isNotEmpty() || _tracks.value.isEmpty()) {
+                                    _tracks.value = data.first.tracks
+                                }
                                 _continuation.value = data.second
                                 if (data.second.isNullOrEmpty()) _tracksListState.value = ListState.PAGINATION_EXHAUST
-                                playlistRepository.insertRadioPlaylist(data.first.toPlaylistEntity())
+                                if (data.first.tracks.isNotEmpty()) {
+                                    playlistRepository.insertRadioPlaylist(data.first.toPlaylistEntity())
+                                }
                             }
 
                             else -> {
@@ -253,7 +316,17 @@ class PlaylistViewModel(
                                                 radioEndpoint = data.first.radioEndpoint,
                                             ),
                                     )
-                                _tracks.value = data.first.tracks
+                                // Fork: keep the tracks already on the device. A response that
+                                // came back empty (geo-blocked or VPN-restricted) must not blank
+                                // the screen, and songs missing from it are appended, not lost.
+                                val fetched = data.first.tracks
+                                if (fetched.isNotEmpty()) {
+                                    val fetchedIds = fetched.map { it.videoId }.toSet()
+                                    val local = localTracksFor(id).filter { it.videoId !in fetchedIds }
+                                    _tracks.value = fetched + local
+                                } else if (_tracks.value.isEmpty()) {
+                                    _tracks.value = localTracksFor(id)
+                                }
                                 _continuation.value = data.second
                                 if (data.second.isNullOrEmpty()) _tracksListState.value = ListState.PAGINATION_EXHAUST
                                 getPlaylistEntity(id = data.first.id, playlistBrowse = data.first)
@@ -324,6 +397,11 @@ class PlaylistViewModel(
                 val playlistEntity = playlistRepository.getPlaylist(id).firstOrNull()
                 if (playlistBrowse != null) {
                     if (playlistEntity == null) {
+                        // Fork: never write an empty track list over the cache.
+                        if (playlistBrowse.tracks.isEmpty() && _tracks.value.isNotEmpty()) {
+                            _tracksListState.value = ListState.PAGINATION_EXHAUST
+                            return@launch
+                        }
                         playlistRepository.insertAndReplacePlaylist(
                             playlistBrowse.toPlaylistEntity(),
                         )
@@ -406,7 +484,12 @@ class PlaylistViewModel(
                             }
                     }
                 } else {
-                    _uiState.value = Error("Empty response")
+                    // Fork: only report an empty playlist when nothing local could be shown.
+                    if (_tracks.value.isEmpty()) {
+                        _uiState.value = Error("Empty response")
+                    } else {
+                        _tracksListState.value = ListState.PAGINATION_EXHAUST
+                    }
                 }
             }
     }
@@ -587,25 +670,31 @@ class PlaylistViewModel(
     fun getFullTracks(callback: (List<Track>) -> Unit) {
         viewModelScope.launch {
             if (tracksListState.value == ListState.PAGINATION_EXHAUST) {
-                _playlistEntity.value
-                    ?.copy(
-                        tracks = tracks.value.toListVideoId(),
-                        trackCount = tracks.value.size,
-                    )?.let {
-                        playlistRepository.insertAndReplacePlaylist(it)
-                    }
+                // Fork: never write an empty track list over the cache.
+                if (tracks.value.isNotEmpty()) {
+                    _playlistEntity.value
+                        ?.copy(
+                            tracks = tracks.value.toListVideoId(),
+                            trackCount = tracks.value.size,
+                        )?.let {
+                            playlistRepository.insertAndReplacePlaylist(it)
+                        }
+                }
                 callback(tracks.value)
             } else {
                 val id = uiState.value.data?.id ?: return@launch
                 tracksListState.collectLatest { state ->
                     if (state == ListState.PAGINATION_EXHAUST) {
-                        _playlistEntity.value
-                            ?.copy(
-                                tracks = tracks.value.toListVideoId(),
-                                trackCount = tracks.value.size,
-                            )?.let {
-                                playlistRepository.insertAndReplacePlaylist(it)
-                            }
+                        // Fork: never write an empty track list over the cache.
+                        if (tracks.value.isNotEmpty()) {
+                            _playlistEntity.value
+                                ?.copy(
+                                    tracks = tracks.value.toListVideoId(),
+                                    trackCount = tracks.value.size,
+                                )?.let {
+                                    playlistRepository.insertAndReplacePlaylist(it)
+                                }
+                        }
                         callback(tracks.value)
                     } else if (state != ListState.PAGINATING) {
                         getContinuationTrack(id, continuation.value)

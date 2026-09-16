@@ -140,6 +140,7 @@ import com.maxrave.simpmusic.ui.navigation.destination.login.SpotifyLoginDestina
 import com.maxrave.simpmusic.ui.theme.md_theme_dark_primary
 import com.maxrave.simpmusic.ui.theme.parseThemeColorHex
 import com.maxrave.simpmusic.ui.theme.typo
+import com.maxrave.simpmusic.utils.DefaultTabPreference
 import com.maxrave.simpmusic.utils.VersionManager
 import com.maxrave.simpmusic.viewModel.ImportViewModel
 import com.maxrave.simpmusic.viewModel.SettingAlertState
@@ -570,6 +571,7 @@ fun SettingScreen(
     val customThemeColorHex by sharedViewModel.getCustomThemeColor().collectAsStateWithLifecycle(DataStoreManager.DEFAULT_THEME_COLOR_HEX)
     val nowPlayingStyle by sharedViewModel.getNowPlayingStyle().collectAsStateWithLifecycle(DataStoreManager.NOW_PLAYING_STYLE_SPOTIFY)
     val lyricsStyle by sharedViewModel.getLyricsStyle().collectAsStateWithLifecycle(DataStoreManager.LYRICS_STYLE_CLASSIC)
+    val defaultTab by sharedViewModel.getDefaultTab().collectAsStateWithLifecycle("")
     val romanizationStored by sharedViewModel.getRomanizationLanguages().collectAsStateWithLifecycle("")
     val japaneseDictionaryState by viewModel.japaneseDictionaryState.collectAsStateWithLifecycle()
     var showColorPickerDialog by rememberSaveable { mutableStateOf(false) }
@@ -695,6 +697,42 @@ fun SettingScreen(
                                         val selected = state.selectOne?.getSelected()
                                         themeModeLabels.firstOrNull { it.second == selected }?.first?.let {
                                             sharedViewModel.setThemeMode(it)
+                                        }
+                                    },
+                                dismiss = runBlocking { getString(Res.string.cancel) },
+                            ),
+                        )
+                    },
+                )
+                // Fork: the app always started on Home and nothing could change that. Mix and
+                // Analytics are gated tabs, so a stored value for one of them is honoured only
+                // while its gate is on — see DefaultTabPreference.destinationOf.
+                val defaultTabLabels =
+                    listOf(
+                        DefaultTabPreference.HOME to stringResource(Res.string.home),
+                        DefaultTabPreference.MIX to stringResource(Res.string.mix),
+                        DefaultTabPreference.ANALYTICS to stringResource(Res.string.analytics),
+                        DefaultTabPreference.LIBRARY to stringResource(Res.string.library),
+                        DefaultTabPreference.SEARCH to stringResource(Res.string.search),
+                    )
+                SettingItem(
+                    title = stringResource(Res.string.default_tab),
+                    subtitle =
+                        defaultTabLabels.firstOrNull { it.first == defaultTab }?.second
+                            ?: stringResource(Res.string.home),
+                    onClick = {
+                        viewModel.setAlertData(
+                            SettingAlertState(
+                                title = runBlocking { getString(Res.string.default_tab) },
+                                selectOne =
+                                    SettingAlertState.SelectData(
+                                        listSelect = defaultTabLabels.map { (it.first == defaultTab) to it.second },
+                                    ),
+                                confirm =
+                                    runBlocking { getString(Res.string.change) } to { state ->
+                                        val selected = state.selectOne?.getSelected()
+                                        defaultTabLabels.firstOrNull { it.second == selected }?.first?.let {
+                                            sharedViewModel.setDefaultTab(it)
                                         }
                                     },
                                 dismiss = runBlocking { getString(Res.string.cancel) },

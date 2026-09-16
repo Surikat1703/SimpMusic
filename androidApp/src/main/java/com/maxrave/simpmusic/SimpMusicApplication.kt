@@ -21,6 +21,7 @@ import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.logger.Logger
 import com.maxrave.simpmusic.di.viewModelModule
 import com.maxrave.simpmusic.service.backup.AutoBackupScheduler
+import com.maxrave.simpmusic.service.mymix.MyMixCacheScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -47,6 +48,7 @@ class SimpMusicApplication :
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val dataStoreManager: DataStoreManager by inject()
     private lateinit var autoBackupScheduler: AutoBackupScheduler
+    private lateinit var myMixCacheScheduler: MyMixCacheScheduler
 
     override fun onCreate() {
         super.onCreate()
@@ -78,6 +80,12 @@ class SimpMusicApplication :
         autoBackupScheduler = AutoBackupScheduler(this, dataStoreManager)
         applicationScope.launch {
             autoBackupScheduler.observeAndSchedule()
+        }
+
+        // Initialize and start MyMixCacheScheduler
+        myMixCacheScheduler = MyMixCacheScheduler(this, dataStoreManager)
+        applicationScope.launch {
+            myMixCacheScheduler.observeAndSchedule()
         }
 
         CaocConfig.Builder

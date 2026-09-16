@@ -160,6 +160,13 @@ fun App(
     val isYouTubeLoggedIn by viewModel.getYouTubeLoggedIn().collectAsStateWithLifecycle(DataStoreManager.FALSE)
     val showMixForYouTab = isYouTubeLoggedIn == TRUE
 
+    // Fork: the app can open on a tab other than Home (Settings -> User interface -> Default tab).
+    // Resolved ONCE per composition, because the bars read `startDestination` as the tab's
+    // identity: any other tab the user then visits sets `selectedIndex` locally, and re-resolving
+    // would only fight that. A stored value for a gated tab (Mix, Analytics) resolves to Home when
+    // the gate is off, so the app can never open on a tab that is not in the bar.
+    val startDestination = remember { viewModel.resolveStartDestination() }
+
     val themeMode by viewModel.getThemeMode().collectAsStateWithLifecycle(DataStoreManager.THEME_MODE_DARK)
     val themeColorSource by viewModel.getThemeColorSource().collectAsStateWithLifecycle(DataStoreManager.THEME_COLOR_DEFAULT)
     val customThemeColorHex by viewModel.getCustomThemeColor().collectAsStateWithLifecycle(DataStoreManager.DEFAULT_THEME_COLOR_HEX)
@@ -484,6 +491,7 @@ fun App(
                             }
                             if (isLiquidGlassEnabled == TRUE) {
                                 LiquidGlassAppBottomNavigationBar(
+                                    startDestination = startDestination,
                                     navController = navController,
                                     backdrop = backdrop,
                                     viewModel = viewModel,
@@ -496,6 +504,7 @@ fun App(
                                 }
                             } else {
                                 AppBottomNavigationBar(
+                                    startDestination = startDestination,
                                     navController = navController,
                                     isTranslucentBackground = isTranslucentBottomBar == TRUE,
                                     showAnalyticsTab = showAnalyticsTab,
@@ -525,6 +534,7 @@ fun App(
                     ) {
                         if (isTablet && !isInFullscreen) {
                             AppNavigationRail(
+                                startDestination = startDestination,
                                 navController = navController,
                                 showAnalyticsTab = showAnalyticsTab,
                                 showMixForYouTab = showMixForYouTab,
@@ -573,6 +583,7 @@ fun App(
                                 AppNavigationGraph(
                                     innerPadding = innerPadding,
                                     navController = navController,
+                                    startDestination = startDestination,
                                     hideNavBar = {
                                         isNavBarVisible = false
                                     },

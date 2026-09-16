@@ -66,6 +66,7 @@ import com.maxrave.simpmusic.Platform
 import com.maxrave.simpmusic.expect.getDownloadFolderPath
 import com.maxrave.simpmusic.expect.ui.toByteArray
 import com.maxrave.simpmusic.getPlatform
+import com.maxrave.simpmusic.utils.DefaultTabPreference
 import com.maxrave.simpmusic.utils.VersionManager
 import com.maxrave.simpmusic.viewModel.base.BaseViewModel
 import kotlinx.coroutines.Dispatchers
@@ -1832,6 +1833,27 @@ class SharedViewModel(
     fun getLyricsStyle() = dataStoreManager.lyricsStyle
 
     fun getLyricsOffsetMs() = dataStoreManager.lyricsOffsetMs
+
+    // Fork: the tab the app opens on, picked in Settings -> User interface.
+    fun getDefaultTab() = dataStoreManager.getString(DefaultTabPreference.KEY)
+
+    /**
+     * Start destination for the nav graph. A stored value for a gated tab (Mix needs a YouTube
+     * session, Analytics needs local tracking) resolves to Home when that gate is off, so the app
+     * can never open on a tab that is not in the bar.
+     */
+    fun resolveStartDestination(): Any =
+        DefaultTabPreference.destinationOf(
+            value = runBlocking { dataStoreManager.getString(DefaultTabPreference.KEY).firstOrNull() },
+            mixAvailable = runBlocking { dataStoreManager.loggedIn.firstOrNull() } == DataStoreManager.TRUE,
+            analyticsAvailable = runBlocking { dataStoreManager.localTrackingEnabled.firstOrNull() } == DataStoreManager.TRUE,
+        )
+
+    fun setDefaultTab(tab: String) {
+        viewModelScope.launch {
+            dataStoreManager.putString(DefaultTabPreference.KEY, tab)
+        }
+    }
 
     fun setThemeMode(mode: String) {
         viewModelScope.launch {

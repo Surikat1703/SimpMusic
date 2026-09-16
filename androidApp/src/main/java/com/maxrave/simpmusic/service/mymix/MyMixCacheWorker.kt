@@ -1,0 +1,168 @@
+package com.maxrave.simpmusic.service.mymix
+
+import android.content.Context
+import androidx.work.CoroutineWorker
+import androidx.work.WorkerParameters
+import com.maxrave.domain.data.entities.DownloadState
+import com.maxrave.domain.manager.DataStoreManager
+import com.maxrave.domain.mediaservice.handler.DownloadHandler
+import com.maxrave.domain.repository.PlaylistRepository
+import com.maxrave.domain.repository.SongRepository
+import com.maxrave.domain.utils.Resource
+import com.maxrave.domain.utils.isRadioPlaylistId
+import com.maxrave.domain.utils.toSongEntity
+import com.maxrave.logger.Logger
+import com.maxrave.simpmusic.ui.screen.library.MyMixPrefs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.withContext
+import kotlinx.datetime.Clock
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
+import kotlin.time.Duration.Companion.days
+
+/**
+ * Fork: keeps the "My Mix" playlist available offline.
+ *
+ * The mix itself is not an ordinary playlist — it is one of YouTube's `RDTM…` radio mixes, so the
+ * track list is resolved through the same repository call the Mix tab uses, and each of the first
+ * [MyMixPrefs.CACHE_COUNT] tracks is handed to the Media3 download manager. Nothing here is
+ * Android-specific beyond the worker plumbing (the screen that shows the settings is common code).
+ *
+ * Tracks that were listened to or skipped are topped up from further down the list: a cached mix
+ * that never changes is a stale mix, so as soon as a cached track has been played once it counts as
+ * spent and an extra track is queued behind it.
+ */
+class MyMixCacheWorker(
+    private val context: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(context, params),
+    KoinComponent {
+    private val dataStoreManager: DataStoreManager by inject()
+    private val playlistRepository: PlaylistRepository by inject()
+    private val songRepository: SongRepository by inject()
+    private val downloadHandler: DownloadHandler by inject()
+
+    override suspend fun doWork(): Result =
+        withContext(Dispatchers.IO) {
+            try {
+                cache()
+                Result.success()
+            } catch (e: Exception) {
+                Logger.e(TAG, "My mix cache run failed: ${e.message}")
+                Result.retry()
+            }
+        }
+
+    private suspend fun cache() {
+        val enabled = dataStoreManager.getString(MyMixPrefs.AUTO_CACHE).first() == DataStoreManager.TRUE
+        val isForced = inputData.getBoolean(KEY_FORCE, false)
+        if (!enabled && !isForced) {
+            Logger.w(TAG, "Auto-cache is off, skipping")
+            return
+        }
+
+        val trackCount = dataStoreManager.getString(MyMixPrefs.CACHE_COUNT).first()?.toIntOrNull() ?: MyMixPrefs.DEFAULT_COUNT
+        val intervalDays = dataStoreManager.getString(MyMixPrefs.CACHE_INTERVAL_DAYS).first()?.toIntOrNull() ?: MyMixPrefs.DEFAULT_INTERVAL_DAYS
+
+        if (!isForced && !isDue(intervalDays)) {
+            Logger.w(TAG, "Cached less than $intervalDays day(s) ago, skipping")
+            return
+        }
+
+        val browseId = resolveMixId() ?: run {
+            Logger.w(TAG, "No mix available to cache")
+            return
+        }
+        Logger.w(TAG, "Caching $trackCount track(s) of $browseId")
+
+        val tracks = fetchTracks(browseId)
+        if (tracks.isEmpty()) {
+            Logger.w(TAG, "Mix $browseId returned no tracks")
+            return
+        }
+
+        // Rows have to exist before Media3 can report progress onto them, so every candidate is
+        // written first; an existing row is left untouched (the insert replaces, and the state the
+        // DAO keeps for an already-downloaded song is preserved by merging it forward).
+        val queued = mutableSetOf<String>()
+        var budget = trackCount
+
+        for (track in tracks) {
+            if (budget <= 0) break
+            val entity = songRepository.getSongById(track.videoId).firstOrNull()
+            val isDownloaded = entity?.downloadState == DownloadState.STATE_DOWNLOADED
+            val isSpent = isDownloaded && (entity?.totalPlayTime ?: 0L) > 0L
+
+            if (entity == null) {
+                songRepository.insertSong(track.toSongEntity()).firstOrNull()
+            }
+
+            if (isDownloaded) {
+                // Already offline: it costs no budget, but a track that has been played is spent
+                // and does not count towards the target either — the next track takes its place.
+                if (isSpent) budget++
+                continue
+            }
+
+            downloadHandler.downloadTrack(
+                videoId = track.videoId,
+                title = track.title,
+                thumbnail = track.thumbnails?.lastOrNull()?.url.orEmpty(),
+            )
+            queued.add(track.videoId)
+            budget--
+        }
+
+        dataStoreManager.putString(MyMixPrefs.LAST_CACHE_AT, Clock.System.now().toEpochMilliseconds().toString())
+        Logger.w(TAG, "Queued ${queued.size} download(s)")
+    }
+
+    private suspend fun isDue(intervalDays: Int): Boolean {
+        val last = dataStoreManager.getString(MyMixPrefs.LAST_CACHE_AT).first()?.toLongOrNull() ?: return true
+        val elapsed = Clock.System.now().toEpochMilliseconds() - last
+        return elapsed >= intervalDays.days.inWholeMilliseconds
+    }
+
+    /**
+     * The mix the tab is on: the mood the user picked, else the same personal supermix the screen
+     * falls back to (the first `RDTM…` entry whose title mentions "super"), else the first one.
+     */
+    private suspend fun resolveMixId(): String? {
+        val picked = dataStoreManager.getString(MyMixPrefs.MOOD_ID).first()
+        if (!picked.isNullOrEmpty()) return picked
+
+        val mixes = playlistRepository.getMixedForYou().firstOrNull().orEmpty()
+        return mixes.firstOrNull { it.browseId.startsWith(SUPERMIX_PREFIX) && it.title.contains("super", ignoreCase = true) }?.browseId
+            ?: mixes.firstOrNull { it.browseId.startsWith(SUPERMIX_PREFIX) }?.browseId
+            ?: mixes.firstOrNull()?.browseId
+    }
+
+    private suspend fun fetchTracks(browseId: String) =
+        if (browseId.isRadioPlaylistId()) {
+            val resource =
+                playlistRepository
+                    .getRadio(
+                        radioId = browseId,
+                        defaultDescription = "Auto-created by YouTube Music",
+                        radioString = "Radio",
+                        viewString = "views",
+                    ).firstOrNull { it is Resource.Success<*> }
+            (resource as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)?.data?.first?.tracks.orEmpty()
+        } else {
+            val resource =
+                playlistRepository
+                    .getPlaylistData(
+                        playlistId = browseId,
+                        viewString = "views",
+                    ).firstOrNull { it is Resource.Success<*> }
+            (resource as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)?.data?.first?.tracks.orEmpty()
+        }
+
+    companion object {
+        private const val TAG = "MyMixCacheWorker"
+        const val KEY_FORCE = "force"
+        const val SUPERMIX_PREFIX = "RDTM"
+    }
+}

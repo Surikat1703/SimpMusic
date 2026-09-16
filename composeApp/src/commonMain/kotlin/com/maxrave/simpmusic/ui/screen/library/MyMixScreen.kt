@@ -77,6 +77,7 @@ import io.ktor.http.Url
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.datetime.Clock
 import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import simpmusic.composeapp.generated.resources.Res
@@ -111,6 +112,9 @@ object MyMixPrefs {
     const val CACHE_COUNT = "my_mix_cache_count"
     const val CACHE_INTERVAL_DAYS = "my_mix_cache_interval_days"
     const val LAST_CACHE_AT = "my_mix_last_cache_at"
+
+    // Fork: a unique value written here asks the cache worker to run once, right away.
+    const val CACHE_REQUEST = "my_mix_cache_request"
 
     const val DEFAULT_COUNT = 100
     const val DEFAULT_INTERVAL_DAYS = 3
@@ -359,7 +363,19 @@ fun MyMixScreen(
         }
 
         item(key = "my_mix_cache") {
-            MyMixCacheCard(dataStoreManager = dataStoreManager, onRefreshNow = {})
+            MyMixCacheCard(
+                dataStoreManager = dataStoreManager,
+                // The scheduler watches this key and enqueues a one-off forced run, so the manual
+                // button goes through the same worker as the schedule instead of downloading here.
+                onRefreshNow = {
+                    scope.launch {
+                        dataStoreManager.putString(
+                            MyMixPrefs.CACHE_REQUEST,
+                            Clock.System.now().toEpochMilliseconds().toString(),
+                        )
+                    }
+                },
+            )
         }
 
         if (allMixes.isNotEmpty()) {
