@@ -177,6 +177,12 @@ import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.about_us
+import simpmusic.composeapp.generated.resources.analytics
+import simpmusic.composeapp.generated.resources.default_tab
+import simpmusic.composeapp.generated.resources.home
+import simpmusic.composeapp.generated.resources.library
+import simpmusic.composeapp.generated.resources.mix
+import simpmusic.composeapp.generated.resources.search
 import simpmusic.composeapp.generated.resources.add_an_account
 import simpmusic.composeapp.generated.resources.ai
 import simpmusic.composeapp.generated.resources.ai_api_key
