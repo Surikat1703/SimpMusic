@@ -409,7 +409,7 @@ fun MyMixScreen(
     // Fork: the same pair from DataStore — the composition AND the ViewModel can both die on a tab
     // switch, but DataStore survives, so re-entry still opens on the playing track's colours.
     val savedFieldColorsRaw by dataStoreManager.getString(MyMixPrefs.FIELD_COLORS)
-        .collectAsStateWithLifecycle(initial = null)
+        .collectAsStateWithLifecycle(initialValue = null)
     val savedFieldColors = remember(savedFieldColorsRaw) {
         savedFieldColorsRaw?.split(",")?.mapNotNull { it.toLongOrNull() }?.takeIf { it.size == 2 }
     }

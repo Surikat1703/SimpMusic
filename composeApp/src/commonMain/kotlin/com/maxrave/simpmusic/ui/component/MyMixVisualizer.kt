@@ -30,12 +30,3 @@ expect fun MyMixVisualizer(
     isVisible: Boolean = true,
     figureCenterY: () -> Float = { 0.36f },
 )
-@Composable
-expect fun MyMixVisualizer(
-    colorPrimary: Color,
-    colorSecondary: Color,
-    modifier: Modifier = Modifier,
-    isPlaying: Boolean = true,
-    isVisible: Boolean = true,
-    figureCenterY: () -> Float = { 0.36f },
-)
