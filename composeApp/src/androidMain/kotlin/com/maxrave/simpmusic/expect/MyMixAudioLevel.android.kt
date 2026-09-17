@@ -56,14 +56,21 @@ actual fun rememberMyMixAudioLevel(isActive: Boolean, sessionId: Int): State<Flo
             var smoothedRms = 0f
             var smoothedBass = 0f
             var lastPublish = 0L
+            // Fork: the track's own running median is the baseline — the last ~30 seconds of level
+            // samples live here, so quiet masters and loud masters both centre on the stock look.
+            val window = ArrayDeque<Float>()
             val publish = {
                 val now = System.currentTimeMillis()
                 if (now - lastPublish >= 100L) {
                     lastPublish = now
-                    // Fork: a square-root curve with real gain — raw RMS/bass numbers sit around
-                    // 0.1–0.3 and would barely move the light; rooted they land mid-scale, so bass
-                    // hits read as unmistakable flares instead of a tremor.
-                    level.value = sqrt((0.25f * smoothedRms + 0.75f * smoothedBass).coerceIn(0f, 1f))
+                    // Fork: square-root gain first (raw numbers sit around 0.1–0.3), then deviation
+                    // from the median: at the median the field runs its stock composition (0.5),
+                    // louder passages flare toward 1, quieter ones calm toward 0.
+                    val blend = sqrt((0.25f * smoothedRms + 0.75f * smoothedBass).coerceIn(0f, 1f))
+                    window.addLast(blend)
+                    if (window.size > 300) window.removeFirst()
+                    val median = window.sorted()[window.size / 2]
+                    level.value = (0.5f + (blend - median) * 4f).coerceIn(0f, 1f)
                 }
             }
             visualizer =
