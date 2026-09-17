@@ -85,23 +85,23 @@ half4 main(vec2 fragCoord) {
     float polarAngle = atan(uv.y, uv.x);
     vec2 direction = vec2(cos(polarAngle), sin(polarAngle));
 
-    float bodyNoise = snoise(uv * 2.1 + loopTime * 0.9, loopTime);
+    float bodyNoise = snoise(uv * 3.3 + loopTime * 0.9, loopTime);
     float rayNoise = snoise(direction * 3.4 + loopTime * 1.4, loopTime);
     float veilNoise = snoise(uv * 4.6 - loopTime.yx * 1.2, loopTime);
     float edgeNoise = snoise(vec2(radius * 3.2, polarAngle * 2.6) + loopTime * 1.1, loopTime);
 
     float audio = clamp(uAudio, 0.0, 1.0);
-    float energy = 0.30 + 0.70 * audio;
+    float energy = 0.55 + 0.45 * audio;
 
-    float bodyRadius = 0.78 + bodyNoise * 0.18;
-    float body = 1.0 - smoothstep(bodyRadius - 0.44, bodyRadius, radius);
+    float bodyRadius = 0.46 + bodyNoise * 0.16;
+    float body = 1.0 - smoothstep(bodyRadius - 0.30, bodyRadius, radius);
     body = pow(body, 1.9);
 
     float rayBand = 0.5 + 0.5 * rayNoise;
-    rayBand = pow(rayBand, 3.0);
-    float rayDistance = exp(-radius * 1.05);
+    rayBand = pow(rayBand, 6.0);
+    float rayDistance = exp(-radius * 1.35);
     float rays = rayBand * rayDistance * (0.60 + 0.50 * edgeNoise) * energy;
-    rays *= 0.60 + 2.20 * audio;
+    rays *= 0.70 + 1.20 * audio;
 
     float veil = pow(max(veilNoise, 0.0), 2.0) * exp(-radius * 0.70) * (0.50 + 0.50 * energy);
     float light = clamp(body * 0.90 + rays * 0.90 + veil * 0.45, 0.0, 1.0);
@@ -128,6 +128,7 @@ actual fun MyMixVisualizer(
     audioLevel: () -> Float,
 ) {
     val clock = rememberMyMixClock(isPlaying = isPlaying, isVisible = isVisible)
+    val smoothAudio = rememberSmoothedAudio(isPlaying = isPlaying, isVisible = isVisible, audio = audioLevel)
     val level by animateFloatAsState(
         targetValue = if (isPlaying && isVisible) 1f else 0f,
         animationSpec = tween(600, easing = FastOutSlowInEasing),
@@ -144,7 +145,7 @@ actual fun MyMixVisualizer(
             val paint = remember { android.graphics.Paint() }
             Canvas(modifier = modifier) {
                 shader.setFloatUniform("uTime", clock.value)
-                shader.setFloatUniform("uAudio", audioLevel().coerceIn(0f, 1f))
+                shader.setFloatUniform("uAudio", smoothAudio.value)
                 shader.setFloatUniform("uResolution", floatArrayOf(size.width, size.height))
                 shader.setFloatUniform(
                     "uColor1",

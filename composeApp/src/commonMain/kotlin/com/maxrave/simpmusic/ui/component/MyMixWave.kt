@@ -19,13 +19,14 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.sin
 
 internal const val MY_MIX_CYCLE_SECONDS = 180f
 private const val TAU = (PI * 2.0).toFloat()
 private const val LOOP_RADIUS = 2f
-private const val RAY_COUNT = 12
+private const val RAY_COUNT = 7
 
 /**
  * Shared 180-second clock. It advances only while the tab is visible and playing, restarts from
@@ -49,6 +50,36 @@ internal fun rememberMyMixClock(isPlaying: Boolean, isVisible: Boolean): State<F
 }
 
 /**
+ * Display-rate smoothed loudness. The analyser publishes at ~10 Hz, which would make the glow
+ * visibly step; this chases the target every frame with a slow attack and a slower release, so
+ * the light breathes at the full frame rate instead of jumping — and small level tremors never
+ * reach the screen.
+ */
+@Composable
+internal fun rememberSmoothedAudio(
+    isPlaying: Boolean,
+    isVisible: Boolean,
+    audio: () -> Float,
+): State<Float> {
+    val display = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(isPlaying, isVisible) {
+        if (!isPlaying || !isVisible) {
+            display.floatValue = 0f
+            return@LaunchedEffect
+        }
+        var previous = androidx.compose.runtime.withFrameNanos { it }
+        while (true) {
+            val now = androidx.compose.runtime.withFrameNanos { it }
+            val delta = ((now - previous) / 1_000_000_000f).coerceIn(0f, 0.1f)
+            previous = now
+            val target = audio().coerceIn(0f, 1f)
+            val speed = if (target > display.floatValue) 6f else 3f
+            display.floatValue += (target - display.floatValue) * (1f - exp(-speed * delta))
+        }
+    }
+    return display
+}
+/**
  * Canvas fallback for the My Mix field: one soft centre glow and volumetric rays on the same
  * seamless 180-second loop as the AGSL renderer.
  *
@@ -65,6 +96,7 @@ fun MyMixWave(
     audioLevel: () -> Float = { 0f },
 ) {
     val clock = rememberMyMixClock(isPlaying = isPlaying, isVisible = isVisible)
+    val smoothAudio = rememberSmoothedAudio(isPlaying = isPlaying, isVisible = isVisible, audio = audioLevel)
     val level by animateFloatAsState(
         targetValue = if (isPlaying && isVisible) 1f else 0f,
         animationSpec = tween(600, easing = FastOutSlowInEasing),
@@ -87,8 +119,8 @@ fun MyMixWave(
         val angle = (time / MY_MIX_CYCLE_SECONDS) * TAU
         val loopX = cos(angle) * LOOP_RADIUS
         val loopY = sin(angle) * LOOP_RADIUS
-        val audio = audioLevel().coerceIn(0f, 1f)
-        val energy = 0.30f + 0.70f * audio
+        val audio = smoothAudio.value
+        val energy = 0.55f + 0.45f * audio
         val center = Offset(width / 2f, height * 0.36f)
         val radius = max(width, height) * 0.58f
         val blend = lerp(colorPrimary, colorSecondary, 0.45f)
@@ -100,10 +132,12 @@ fun MyMixWave(
             val y = sin(theta) * radial
             return 0.55f * sin(3f * theta + x * 3.2f + loopX * 1.4f) +
                 0.30f * sin(7f * theta - y * 5.1f + loopY * 1.6f) +
-                0.15f * sin(11f * theta + (x + y) * 8.0f - loopX * 1.1f)
+                0.25f * sin(12f * theta + (x - y) * 9.0f - loopX * 1.1f)
         }
 
-        val bodyRadius = radius * 0.80f
+        // Fork: the figure is deliberately smaller than its box and stranger than a blob — it must
+        // fit on screen whole instead of bleeding past the frame.
+        val bodyRadius = radius * 0.48f
         // Fork: the veil covers the whole canvas so no edge is ever bare — the corners carry the
         // field's own colour instead of the page tone.
         drawCircle(
@@ -142,7 +176,7 @@ fun MyMixWave(
             val theta = baseTheta + sway + loopX * 0.05f
             val halfWidth = (0.055f + 0.045f * (0.5f + 0.5f * field(theta, 0.85f))) * radius
             val inner = radius * (0.28f + 0.05f * field(theta, 0.30f))
-            val outer = radius * (1.55f + 0.12f * field(theta, 1.0f)) * (0.60f + 0.90f * audio)
+            val outer = radius * (1.18f + 0.10f * field(theta, 1.0f)) * (0.70f + 0.55f * audio)
             val direction = Offset(cos(theta), sin(theta))
             val normal = Offset(-direction.y, direction.x)
             val alpha = (0.20f + 0.22f * (0.5f + 0.5f * field(theta + 0.35f, 0.7f))) * energy * level
