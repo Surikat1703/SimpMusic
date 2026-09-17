@@ -62,6 +62,22 @@ actual fun rememberMyMixAudioLevels(
 
         var visualizer: Visualizer? = null
         try {
+            // Fork: the callbacks are throttled into one publish every ~66 ms. Android delivers
+            // waveform and FFT separately and as fast as the device can, so publishing straight from
+            // them meant a redraw per callback — the tab ran at whatever rate the audio hardware felt
+            // like. 15 Hz is far more than an eye can follow on a slow liquid field.
+            var lastRms = 0f
+            var lastBass = 0f
+            var lastTreble = 0f
+            var lastPublish = 0L
+            val publish = {
+                val now = System.currentTimeMillis()
+                if (now - lastPublish >= 66L) {
+                    lastPublish = now
+                    levels.value =
+                        MyMixAudioLevels(rms = lastRms, bass = lastBass, treble = lastTreble)
+                }
+            }
             visualizer =
                 Visualizer(sessionId).apply {
                     val range = Visualizer.getCaptureSizeRange()
@@ -79,8 +95,8 @@ actual fun rememberMyMixAudioLevels(
                                     val sample = (byte.toInt() and 0xFF) - 128
                                     sum += sample.toDouble() * sample
                                 }
-                                val rms = (sqrt(sum / waveform.size) / 128.0).toFloat().coerceIn(0f, 1f)
-                                levels.value = levels.value.copy(rms = rms)
+                                lastRms = (sqrt(sum / waveform.size) / 128.0).toFloat().coerceIn(0f, 1f)
+                                publish()
                             }
 
                             override fun onFftDataCapture(
@@ -102,10 +118,12 @@ actual fun rememberMyMixAudioLevels(
                                     val magnitude = magnitudeAt(fft, i)
                                     if (magnitude > treble) treble = magnitude
                                 }
-                                levels.value = levels.value.copy(bass = bass, treble = treble)
+                                lastBass = bass
+                                lastTreble = treble
+                                publish()
                             }
                         },
-                        Visualizer.getMaxCaptureRate() / 2,
+                        Visualizer.getMaxCaptureRate() / 4,
                         true,
                         true,
                     )

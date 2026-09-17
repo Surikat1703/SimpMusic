@@ -26,6 +26,11 @@ import androidx.compose.ui.unit.dp
  * 600 ms, and the level is the field's own alpha. What is left underneath is the flat
  * [colorPrimary] the screen paints behind this — no vignette, no noise.
  *
+ * Fork: the three reaction values are LAMBDAS, not plain floats, and that is not a style choice. The
+ * analyser updates dozens of times a second; passing its numbers as arguments makes the whole screen
+ * recompose on every callback, which is what made this tab stutter. A lambda is read inside the draw
+ * pass instead, so a new level only invalidates the drawing, never the composition.
+ *
  * @param colorPrimary the artwork's dominant colour, painted flat behind everything.
  * @param colorSecondary the artwork's vibrant swatch, the second stop of the field's palette.
  * @param isPlaying fades the whole field in and out — it must never snap.
@@ -39,9 +44,9 @@ expect fun MyMixVisualizer(
     colorSecondary: Color,
     modifier: Modifier = Modifier,
     isPlaying: Boolean = true,
-    amplitude: Float = 0f,
-    bass: Float = 0f,
-    speed: Float = 1f,
+    amplitude: () -> Float = { 0f },
+    bass: () -> Float = { 0f },
+    speed: () -> Float = { 1f },
     intensity: Float = 1f,
     fallbackSize: Dp = 240.dp,
     fallbackFullBleed: Boolean = true,

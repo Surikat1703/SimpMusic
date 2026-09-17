@@ -137,7 +137,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.maxrave.domain.data.entities.SongEntity
-import com.maxrave.domain.data.model.streams.TimeLine
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.connectArtists
 import com.maxrave.domain.utils.toArrayListTrack
@@ -304,7 +303,6 @@ fun MyMixScreen(
     // Fork: the field dances to whatever is playing, so the hero follows the transport state.
     val controllerState by sharedViewModel.controllerState.collectAsStateWithLifecycle()
     val nowPlaying by sharedViewModel.nowPlayingState.collectAsStateWithLifecycle()
-    val timelineState by sharedViewModel.timeline.collectAsStateWithLifecycle()
 
     val mixResource by viewModel.youTubeMixForYou.collectAsStateWithLifecycle()
     val allMixes = mixResource.data.orEmpty()
@@ -448,8 +446,11 @@ fun MyMixScreen(
     // Fork: real levels of the app's own playback, so the field reacts to the music itself rather than
     // to the volume slider. An all-zero result means no analyser is attached — no permission, an older
     // phone, Desktop — and the visualizer falls back to its synthetic beat.
-    val audioLevels by rememberMyMixAudioLevels(isPlaying = isPlayingNow, sessionId = audioSessionId)
-    val analyserActive = !audioLevels.isSilent
+    //
+    // Note the missing `by`: this stays a State on purpose and is only ever read inside the
+    // visualizer's lambdas, because the analyser reports dozens of times a second and a value read
+    // here would recompose this whole screen — list included — on every callback.
+    val audioLevels = rememberMyMixAudioLevels(isPlaying = isPlayingNow, sessionId = audioSessionId)
 
     // Fork: the like button has to land in YOUTUBE's liked songs, not only in the app's local list. The
     // local toggle stays because the rest of the app reads that flag, but the account is what the user
@@ -664,11 +665,15 @@ fun MyMixScreen(
             // The field answers to the transport, not to this tab's own player.
             isPlaying = isPlayingNow,
             // Fork: loudness and bass come from the app's own audio session, and speed from the treble
-            // content. All three are zero when no analyser could be attached, and the field then runs
-            // its own synthetic beat instead.
-            amplitude = audioLevels.rms,
-            bass = audioLevels.bass,
-            speed = if (analyserActive) 0.5f + 1.6f * audioLevels.treble else 1f,
+            // content. All three are read INSIDE the draw pass through lambdas — passing the numbers
+            // directly would recompose the screen on every analyser callback. They are all zero when no
+            // analyser could be attached, and the field then runs its own synthetic beat.
+            amplitude = { audioLevels.value.rms },
+            bass = { audioLevels.value.bass },
+            speed = {
+                val levels = audioLevels.value
+                if (levels.isSilent) 1f else 0.5f + 1.6f * levels.treble
+            },
         )
 
         // Only the bottom of the page is scrimmed, and only so the pills and the cache card stay
@@ -745,20 +750,17 @@ fun MyMixScreen(
                         }
                     }
 
-                    // Fork: the middle of the hero is the mood name until something is playing, and the
-                    // player itself once this tab has started a queue — the stock mini player is hidden
-                    // on this tab, so this IS the player here.
+                    // Fork: the middle of the hero is the player whenever there IS a current track,
+                    // playing or paused — the stock mini player is hidden on this tab, so this IS the
+                    // player here, and its own button is the play/pause toggle. It used to disappear on
+                    // pause, which left the page with neither a player nor a start button.
                     val nowSong = nowPlaying?.songEntity
-                    // While a new selection is loading the player would still be showing the previous
-                    // track, so the loading state wins: what is on screen must describe what the user
-                    // has just chosen, not what is still playing.
-                    if (nowSong != null && !isPreparing && (isPlayingNow || controllerState.isPlaying)) {
+                    if (nowSong != null && !isPreparing) {
                         MyMixNowPlaying(
                             song = nowSong,
                             isPlaying = isPlayingNow,
                             isLiked = youTubeLiked,
                             accent = playingDominant,
-                            timeline = timelineState,
                             onOpenPlayer = onOpenNowPlaying,
                             onToggleLike = { toggleLike() },
                             onPlayPause = { sharedViewModel.onUIEvent(UIEvent.PlayPause) },
@@ -767,30 +769,36 @@ fun MyMixScreen(
                             onSeek = { sharedViewModel.onUIEvent(UIEvent.UpdateProgress(it)) },
                         )
                     } else {
+                        // Nothing to control yet: the cover of what the button below would start,
+                        // its name, and the start button itself. The artwork is shown here even when
+                        // the track is not playing, because the tab should never be a blank page.
                         Column(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
                         ) {
+                            AsyncImage(
+                                model = selectedMix?.thumbnails?.lastOrNull()?.url,
+                                contentScale = ContentScale.Crop,
+                                modifier =
+                                    Modifier
+                                        .size(168.dp)
+                                        .clip(RoundedCornerShape(18.dp))
+                                        .background(Color.White.copy(alpha = 0.12f)),
+                                contentDescription = selectedMix?.title,
+                            )
                             Text(
                                 text = if (isLikesSelected) {
                                     stringResource(Res.string.my_mix_no_mood)
                                 } else {
                                     selectedMix?.title ?: stringResource(Res.string.my_mix_subtitle)
                                 },
-                                style = typo().titleLarge.copy(fontSize = 38.sp, fontWeight = FontWeight.Bold),
+                                style = typo().titleLarge.copy(fontSize = 32.sp, fontWeight = FontWeight.Bold),
                                 color = Color.White,
                                 textAlign = TextAlign.Center,
                                 maxLines = 3,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            if (isPreparing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(34.dp),
-                                    strokeWidth = 3.dp,
-                                    color = Color.White,
-                                )
-                            }
                             if (playFailed) {
                                 Text(
                                     text = stringResource(Res.string.my_mix_empty),
@@ -798,6 +806,38 @@ fun MyMixScreen(
                                     color = Color.White.copy(alpha = 0.85f),
                                     textAlign = TextAlign.Center,
                                 )
+                            }
+                            FilledIconButton(
+                                onClick = {
+                                    when {
+                                        offline -> playOffline()
+                                        isLikesSelected -> playLikes()
+                                        else -> selectedMix?.let { playMix(it) }
+                                    }
+                                },
+                                modifier = Modifier.size(84.dp),
+                                enabled = !isPreparing && (isLikesSelected || selectedMix != null),
+                                colors =
+                                    IconButtonDefaults.filledIconButtonColors(
+                                        containerColor = Color.White,
+                                        contentColor = Color.Black,
+                                        disabledContainerColor = Color.White.copy(alpha = 0.55f),
+                                        disabledContentColor = Color.Black.copy(alpha = 0.4f),
+                                    ),
+                            ) {
+                                if (isPreparing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(32.dp),
+                                        strokeWidth = 3.dp,
+                                        color = Color.Black,
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = SimpIcons.PlayArrow,
+                                        contentDescription = stringResource(Res.string.my_mix_play),
+                                        modifier = Modifier.size(42.dp),
+                                    )
+                                }
                             }
                         }
                     }
@@ -878,49 +918,9 @@ fun MyMixScreen(
                 }
             }
 
-            // The big button is the FIRST start and nothing else: choosing a mood starts it immediately,
-            // so once anything is playing this goes away instead of offering a second play button right
-            // under the player's own transport.
-            if (startedMixId == null) {
-                item(key = "my_mix_play") {
-                    Box(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        FilledIconButton(
-                            onClick = {
-                                when {
-                                    offline -> playOffline()
-                                    isLikesSelected -> playLikes()
-                                    else -> selectedMix?.let { playMix(it) }
-                                }
-                            },
-                            modifier = Modifier.size(84.dp),
-                            enabled = !isPreparing && (isLikesSelected || selectedMix != null),
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = Color.White,
-                                contentColor = Color.Black,
-                                disabledContainerColor = Color.White.copy(alpha = 0.55f),
-                                disabledContentColor = Color.Black.copy(alpha = 0.4f),
-                            ),
-                        ) {
-                            if (isPreparing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(32.dp),
-                                    strokeWidth = 3.dp,
-                                    color = Color.Black,
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = SimpIcons.PlayArrow,
-                                    contentDescription = stringResource(Res.string.my_mix_play),
-                                    modifier = Modifier.size(42.dp),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            // Fork: the start button lives inside the hero now (under the cover it would start), so
+            // there is exactly one play control on the page at any moment — either the player's own
+            // transport or this one.
 
             if (!isLoadingMixes && allMixes.isEmpty()) {
                 item(key = "my_mix_empty") {
@@ -1115,7 +1115,6 @@ private fun MyMixNowPlaying(
     isPlaying: Boolean,
     isLiked: Boolean,
     accent: Color,
-    timeline: TimeLine,
     onOpenPlayer: () -> Unit,
     onToggleLike: () -> Unit,
     onPlayPause: () -> Unit,
@@ -1123,6 +1122,11 @@ private fun MyMixNowPlaying(
     onPrevious: () -> Unit,
     onSeek: (Float) -> Unit,
 ) {
+    // Fork: the timeline is collected HERE rather than passed in. It changes every few hundred
+    // milliseconds, and a value read by the screen would recompose the whole tab — the list included —
+    // on every position tick.
+    val sharedViewModel: SharedViewModel = koinInject()
+    val timeline by sharedViewModel.timeline.collectAsStateWithLifecycle()
     var isSliding by remember { mutableStateOf(false) }
     var sliderValue by remember { mutableStateOf(0f) }
 

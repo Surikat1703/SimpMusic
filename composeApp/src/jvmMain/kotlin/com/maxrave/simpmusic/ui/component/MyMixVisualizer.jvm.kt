@@ -9,8 +9,8 @@ import androidx.compose.ui.unit.Dp
  * The My Mix field, Desktop side: the Canvas blob field.
  *
  * Desktop has no AGSL and no `android.media.audiofx.Visualizer`, so it keeps [MyMixWave] and rides
- * that renderer's own synthetic beat. It is the same field the Android fallback draws, which is
- * deliberate — the desktop app and an older phone should look like the same product.
+ * that renderer's own synthetic beat. It is the same field Android draws, which is deliberate — the
+ * desktop app and the phone should look like the same product.
  */
 @Composable
 actual fun MyMixVisualizer(
@@ -18,9 +18,9 @@ actual fun MyMixVisualizer(
     colorSecondary: Color,
     modifier: Modifier,
     isPlaying: Boolean,
-    amplitude: Float,
-    bass: Float,
-    speed: Float,
+    amplitude: () -> Float,
+    bass: () -> Float,
+    speed: () -> Float,
     intensity: Float,
     fallbackSize: Dp,
     fallbackFullBleed: Boolean,
