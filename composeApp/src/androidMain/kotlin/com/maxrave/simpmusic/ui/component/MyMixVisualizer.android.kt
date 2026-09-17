@@ -91,26 +91,26 @@ half4 main(vec2 fragCoord) {
     float edgeNoise = snoise(vec2(radius * 3.2, polarAngle * 2.6) + loopTime * 1.1, loopTime);
 
     float audio = clamp(uAudio, 0.0, 1.0);
-    float energy = 0.35 + 0.65 * audio;
+    float energy = 0.30 + 0.70 * audio;
 
-    float bodyRadius = 0.60 + bodyNoise * 0.16;
-    float body = 1.0 - smoothstep(bodyRadius - 0.38, bodyRadius, radius);
+    float bodyRadius = 0.78 + bodyNoise * 0.18;
+    float body = 1.0 - smoothstep(bodyRadius - 0.44, bodyRadius, radius);
     body = pow(body, 1.9);
 
     float rayBand = 0.5 + 0.5 * rayNoise;
     rayBand = pow(rayBand, 3.0);
-    float rayDistance = exp(-radius * 1.35);
+    float rayDistance = exp(-radius * 1.05);
     float rays = rayBand * rayDistance * (0.60 + 0.50 * edgeNoise) * energy;
-    rays *= 0.80 + 0.50 * audio;
+    rays *= 0.60 + 2.20 * audio;
 
     float veil = pow(max(veilNoise, 0.0), 2.0) * exp(-radius * 0.70) * (0.50 + 0.50 * energy);
-    float light = clamp(body * 0.90 + rays * 0.85 + veil * 0.30, 0.0, 1.0);
+    float light = clamp(body * 0.90 + rays * 0.90 + veil * 0.30, 0.0, 1.0);
     float vignette = 1.0 - smoothstep(0.18, 1.15, radius);
 
-    vec3 rayColour = mix(uColor1.rgb, vec3(1.0), 0.38);
+    vec3 rayColour = mix(uColor1.rgb, vec3(1.0), 0.45);
     vec3 colour = mix(uColor2.rgb * 0.80, uColor1.rgb, light);
-    colour += rayColour * rays * 0.50;
-    colour = mix(colour, uColor2.rgb, (1.0 - vignette) * 0.85);
+    colour += rayColour * rays * 0.55;
+    colour = mix(colour, uColor2.rgb * 0.45, (1.0 - vignette) * 0.90);
     float alpha = clamp(light * 0.90 + veil * 0.20, 0.0, 1.0);
     return half4(half(colour.x), half(colour.y), half(colour.z), half(alpha));
 }

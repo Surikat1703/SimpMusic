@@ -88,11 +88,11 @@ fun MyMixWave(
         val loopX = cos(angle) * LOOP_RADIUS
         val loopY = sin(angle) * LOOP_RADIUS
         val audio = audioLevel().coerceIn(0f, 1f)
-        val energy = 0.35f + 0.65f * audio
+        val energy = 0.30f + 0.70f * audio
         val center = Offset(width / 2f, height * 0.36f)
         val radius = max(width, height) * 0.58f
         val blend = lerp(colorPrimary, colorSecondary, 0.45f)
-        val rayCore = lerp(colorPrimary, Color.White, 0.35f)
+        val rayCore = lerp(colorPrimary, Color.White, 0.45f)
         val path = Path()
 
         fun field(theta: Float, radial: Float): Float {
@@ -103,7 +103,7 @@ fun MyMixWave(
                 0.15f * sin(11f * theta + (x + y) * 8.0f - loopX * 1.1f)
         }
 
-        val bodyRadius = radius * 0.62f
+        val bodyRadius = radius * 0.80f
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
@@ -126,10 +126,10 @@ fun MyMixWave(
             val theta = baseTheta + sway + loopX * 0.05f
             val halfWidth = (0.055f + 0.045f * (0.5f + 0.5f * field(theta, 0.85f))) * radius
             val inner = radius * (0.28f + 0.05f * field(theta, 0.30f))
-            val outer = radius * (1.18f + 0.10f * field(theta, 1.0f)) * (0.85f + 0.35f * audio)
+            val outer = radius * (1.55f + 0.12f * field(theta, 1.0f)) * (0.60f + 0.90f * audio)
             val direction = Offset(cos(theta), sin(theta))
             val normal = Offset(-direction.y, direction.x)
-            val alpha = (0.16f + 0.16f * (0.5f + 0.5f * field(theta + 0.35f, 0.7f))) * energy * level
+            val alpha = (0.20f + 0.22f * (0.5f + 0.5f * field(theta + 0.35f, 0.7f))) * energy * level
 
             path.reset()
             path.moveTo(center.x + direction.x * inner, center.y + direction.y * inner)

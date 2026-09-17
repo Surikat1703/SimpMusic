@@ -281,9 +281,9 @@ private fun cleanMoodName(raw: String): String {
         .trim()
 }
 
-/** Fork: the page background is the cover colour darkened so white text never washes out. */
+/** Fork: the page background is the cover colour sunk almost to black, so white text never washes out. */
 private fun darkenForText(color: Color): Color =
-    Color(color.red * 0.45f, color.green * 0.45f, color.blue * 0.45f, 1f)
+    Color(color.red * 0.16f, color.green * 0.16f, color.blue * 0.16f, 1f)
 
 /**
  * Fork: the RGB opposite of the page background, for the progress pill that used to disappear
