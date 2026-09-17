@@ -1,5 +1,6 @@
 package com.maxrave.simpmusic.ui.component
 
+import android.graphics.RuntimeShader
 import android.os.Build
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -10,8 +11,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ShaderBrush
-import androidx.compose.ui.graphics.shader.RuntimeShader
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 
 private const val MY_MIX_SHADER = """
 uniform float2 uResolution;
@@ -131,25 +132,33 @@ actual fun MyMixVisualizer(
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         val shader = remember { runCatching { RuntimeShader(MY_MIX_SHADER) }.getOrNull() }
         if (shader != null) {
-            val brush = remember(shader) { ShaderBrush(shader) }
+            val paint = remember { android.graphics.Paint() }
             Canvas(modifier = modifier) {
                 shader.setFloatUniform("uTime", clock.value)
-                shader.setFloat2Uniform("uResolution", size.width, size.height)
-                shader.setFloat4Uniform(
+                shader.setFloatUniform("uResolution", floatArrayOf(size.width, size.height))
+                shader.setFloatUniform(
                     "uColor1",
-                    colorPrimary.red,
-                    colorPrimary.green,
-                    colorPrimary.blue,
-                    colorPrimary.alpha,
+                    floatArrayOf(
+                        colorPrimary.red,
+                        colorPrimary.green,
+                        colorPrimary.blue,
+                        colorPrimary.alpha,
+                    ),
                 )
-                shader.setFloat4Uniform(
+                shader.setFloatUniform(
                     "uColor2",
-                    colorSecondary.red,
-                    colorSecondary.green,
-                    colorSecondary.blue,
-                    colorSecondary.alpha,
+                    floatArrayOf(
+                        colorSecondary.red,
+                        colorSecondary.green,
+                        colorSecondary.blue,
+                        colorSecondary.alpha,
+                    ),
                 )
-                drawRect(brush = brush, alpha = level)
+                paint.shader = shader
+                paint.alpha = (level * 255f).toInt().coerceIn(0, 255)
+                drawIntoCanvas { canvas ->
+                    canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
+                }
             }
             return
         }
