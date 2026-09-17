@@ -9,7 +9,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -19,10 +18,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.unit.dp
-import com.maxrave.simpmusic.expect.MyMixAudio
 import kotlin.math.PI
 import kotlin.math.cos
-import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.sin
 
@@ -53,50 +50,9 @@ internal fun rememberMyMixClock(isPlaying: Boolean, isVisible: Boolean): State<F
 }
 
 /**
- * Display-rate smoothed loudness, both channels. The analyser publishes at ~10 Hz, which would
- * make the glow visibly step; this chases each target every frame with a fast attack and a SLOW
- * release, so lines float in and out instead of blinking — and small tremors never reach the
- * screen. Volume moves only the particles, bass moves the stripes.
- */
-@Composable
-internal fun rememberSmoothedAudio(
-    isPlaying: Boolean,
-    isVisible: Boolean,
-    audio: () -> MyMixAudio,
-): State<MyMixAudio> {
-    val display = remember { mutableStateOf(MyMixAudio()) }
-    LaunchedEffect(isPlaying, isVisible) {
-        if (!isPlaying || !isVisible) {
-            display.value = MyMixAudio()
-            return@LaunchedEffect
-        }
-        var previous = androidx.compose.runtime.withFrameNanos { it }
-        while (true) {
-            val now = androidx.compose.runtime.withFrameNanos { it }
-            val delta = ((now - previous) / 1_000_000_000f).coerceIn(0f, 0.1f)
-            previous = now
-            val target = audio()
-            val current = display.value
-            val attack = 1f - exp(-6f * delta)
-            // Fork: the release is deliberately three times slower than the attack — a stripe that
-            // flared on a kick stays lit while it decays instead of snapping off with the transient.
-            val release = 1f - exp(-2f * delta)
-            display.value = MyMixAudio(
-                volume = current.volume + (target.volume - current.volume) *
-                    if (target.volume > current.volume) attack else release,
-                bass = current.bass + (target.bass - current.bass) *
-                    if (target.bass > current.bass) attack else release,
-            )
-        }
-    }
-    return display
-}
-/**
- * Canvas fallback for the My Mix field: one soft centre glow and volumetric rays on the same
- * seamless 180-second loop as the AGSL renderer.
- *
- * The shape and speed are hardcoded. [audioLevel] only scales ray/contour brightness and length,
- * so the sound breathes through the light without changing the animation.
+ * Canvas fallback for the My Mix field: one soft centre glow, calm random rays and drifting
+ * particles on the same seamless 180-second loop as the AGSL renderer. Fully hardcoded — no audio
+ * input of any kind, so it fits every track identically.
  */
 @Composable
 fun MyMixWave(
@@ -105,11 +61,9 @@ fun MyMixWave(
     modifier: Modifier = Modifier,
     isPlaying: Boolean = true,
     isVisible: Boolean = true,
-    audio: () -> MyMixAudio = { MyMixAudio() },
     figureCenterY: () -> Float = { 0.36f },
 ) {
     val clock = rememberMyMixClock(isPlaying = isPlaying, isVisible = isVisible)
-    val smoothAudio = rememberSmoothedAudio(isPlaying = isPlaying, isVisible = isVisible, audio = audio)
     val level by animateFloatAsState(
         targetValue = if (isPlaying && isVisible) 1f else 0f,
         animationSpec = tween(600, easing = FastOutSlowInEasing),
@@ -144,20 +98,12 @@ fun MyMixWave(
         val angle = (time / MY_MIX_CYCLE_SECONDS) * TAU
         val loopX = cos(angle) * LOOP_RADIUS
         val loopY = sin(angle) * LOOP_RADIUS
-        // Fork: volume moves ONLY the particles further down; bass moves the stripes — their
-        // count, brightness, gradient and shake. Both ride the per-frame smoother above.
-        val bass = smoothAudio.value.bass
-        val volume = smoothAudio.value.volume
-        val energy = 0.55f + 0.45f * bass
+        val energy = 0.80f
         val radius = max(width, height) * 0.58f
         val center = Offset(width / 2f, height * figureCenterY().coerceIn(-0.5f, 1.5f)) +
-            // Fork: a light smooth shake over the whole figure on bass — looped drift scaled by the
-            // smoothed level, so it sways instead of jittering.
-            Offset(loopX * bass * radius * 0.030f, loopY * bass * radius * 0.030f)
+            Offset(loopX * radius * 0.012f, loopY * radius * 0.012f)
         val blend = lerp(colorPrimary, colorSecondary, 0.45f)
         val rayCore = lerp(colorPrimary, Color.White, 0.45f)
-        // Fork: on hard bass the light goes near-white but keeps the cover's tint — never pure white.
-        val hotCore = lerp(rayCore, Color.White, 0.75f * bass * bass)
         val path = Path()
 
         fun field(theta: Float, radial: Float): Float {
@@ -209,14 +155,10 @@ fun MyMixWave(
             val theta = baseTheta + sway + loopX * 0.05f
             val halfWidth = (0.055f + 0.045f * (0.5f + 0.5f * field(theta, 0.85f))) * radius
             val inner = radius * (0.28f + 0.05f * field(theta, 0.30f))
-            val outer = radius * (1.18f + 0.10f * field(theta, 1.0f)) * (0.55f + 1.10f * bass)
+            val outer = radius * (1.18f + 0.10f * field(theta, 1.0f))
             val direction = Offset(cos(theta), sin(theta))
             val normal = Offset(-direction.y, direction.x)
-            // Fork: the COUNT of rays follows the loudness — each ray gets its own gate, so separate
-            // rays smoothly fade in and out as the level moves instead of blinking at once.
-            val gate = (index.toFloat() / RAY_COUNT) * 0.75f
-            val gateAlpha = ((bass * 1.2f - gate) / 0.25f).coerceIn(0f, 1f)
-            val alpha = (0.20f + 0.22f * (0.5f + 0.5f * field(theta + 0.35f, 0.7f))) * energy * level * gateAlpha
+            val alpha = (0.20f + 0.22f * (0.5f + 0.5f * field(theta + 0.35f, 0.7f))) * energy * level
 
             path.reset()
             path.moveTo(center.x + direction.x * inner, center.y + direction.y * inner)
@@ -233,7 +175,7 @@ fun MyMixWave(
                 path = path,
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        hotCore.copy(alpha = alpha),
+                        rayCore.copy(alpha = alpha),
                         colorSecondary.copy(alpha = alpha * 0.35f),
                         Color.Transparent,
                     ),
@@ -258,22 +200,15 @@ fun MyMixWave(
             blendMode = BlendMode.Plus,
         )
 
-        // Fork: sound-driven particles mirroring the AGSL sparkle field — precomputed drifters whose
-        // twinkle runs 24 cycles per 180-second loop (seamless) and whose brightness follows the level.
         val dotBase = 3.dp.toPx()
-        for ((particleIndex, particle) in particles.withIndex()) {
+        for (particle in particles) {
             val particleAngle = particle[0] + loopX * 0.03f
-            val particleRadius = radius * particle[1] * (0.9f + 0.2f * volume)
+            val particleRadius = radius * particle[1]
             val twinkle = 0.5f + 0.5f * sin(time * TAU * 24f / MY_MIX_CYCLE_SECONDS + particle[3])
-            // Fork: the particle COUNT follows the regular loudness — each dot gets its own gate on
-            // top of the twinkle, so the field thickens smoothly instead of popping. The near-white
-            // heat on top still answers to the bass.
-            val particleGate = ((volume * 1.2f - (particleIndex.toFloat() / particles.size) * 0.8f) / 0.2f)
-                .coerceIn(0f, 1f)
-            val particleAlpha = 0.5f * twinkle * (0.25f + 0.75f * volume) * level * particleGate
+            val particleAlpha = 0.5f * twinkle * 0.60f * level
             if (particleAlpha > 0.01f) {
                 drawCircle(
-                    color = hotCore.copy(alpha = particleAlpha),
+                    color = rayCore.copy(alpha = particleAlpha),
                     radius = particle[2] * dotBase * 0.5f,
                     center = center + Offset(
                         cos(particleAngle) * particleRadius,

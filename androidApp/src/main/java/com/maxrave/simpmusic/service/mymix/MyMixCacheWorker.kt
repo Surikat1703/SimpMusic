@@ -65,6 +65,10 @@ class MyMixCacheWorker(
 
         val trackCount = dataStoreManager.getString(MyMixPrefs.CACHE_COUNT).first()?.toIntOrNull() ?: MyMixPrefs.DEFAULT_COUNT
         val intervalDays = dataStoreManager.getString(MyMixPrefs.CACHE_INTERVAL_DAYS).first()?.toIntOrNull() ?: MyMixPrefs.DEFAULT_INTERVAL_DAYS
+        // Fork: the previous plan, read BEFORE it is overwritten below — whatever falls out of the
+        // fresh plan is stale (listened, skipped or replaced) and becomes an eviction candidate.
+        val previousPlan = dataStoreManager.getString(MyMixPrefs.CACHED_IDS).first()
+            .orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 
         if (!isForced && !isDue(intervalDays)) {
             Logger.w(TAG, "Cached less than $intervalDays day(s) ago, skipping")
@@ -122,9 +126,47 @@ class MyMixCacheWorker(
             budget--
         }
 
+        evictStale(previousPlan - planned.toSet())
+
         dataStoreManager.putString(MyMixPrefs.LAST_CACHE_AT, Clock.System.now().toEpochMilliseconds().toString())
         dataStoreManager.putString(MyMixPrefs.CACHED_IDS, planned.joinToString(","))
         Logger.w(TAG, "Queued ${queued.size} download(s) of ${planned.size} planned")
+    }
+
+    /**
+     * Fork: evicts mix-cache tracks the fresh plan no longer wants — listened, skipped or simply
+     * replaced by newly downloaded ones — so the cache cannot grow without bound.
+     *
+     * A track is NEVER deleted once the user has claimed it: locally liked, present in the local
+     * liked songs, or sitting in the account's YouTube Liked Music playlist (fetched best-effort —
+     * offline the local signals still guard). Only fully downloaded rows are touched; anything
+     * mid-download is left alone.
+     */
+    private suspend fun evictStale(staleIds: Set<String>) {
+        if (staleIds.isEmpty()) return
+        val candidates = songRepository.getSongsByListVideoId(staleIds.toList()).first()
+            .filter { it.downloadState == DownloadState.STATE_DOWNLOADED }
+        if (candidates.isEmpty()) return
+        val likedIds = runCatching { songRepository.getLikedSongs().first().map { it.videoId }.toSet() }
+            .getOrDefault(emptySet())
+        val youTubeLikedIds = runCatching {
+            (playlistRepository.getPlaylistData(
+                playlistId = MyMixPrefs.YT_LIKED_PLAYLIST_ID,
+                viewString = "views",
+            ).first() as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)
+                ?.data?.first?.tracks.orEmpty().map { it.videoId }.toSet()
+        }.getOrDefault(emptySet())
+        var evicted = 0
+        for (entity in candidates) {
+            val id = entity.videoId
+            if (entity.liked || id in likedIds || id in youTubeLikedIds) continue
+            runCatching {
+                downloadHandler.removeDownload(id)
+                songRepository.updateDownloadState(id, DownloadState.STATE_NOT_DOWNLOADED)
+                evicted++
+            }
+        }
+        Logger.w(TAG, "Evicted $evicted stale download(s) of ${candidates.size} candidate(s)")
     }
 
     private suspend fun isDue(intervalDays: Int): Boolean {

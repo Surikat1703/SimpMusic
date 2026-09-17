@@ -82,7 +82,6 @@ import com.maxrave.domain.repository.PlaylistRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.simpmusic.expect.rememberIsOnline
-import com.maxrave.simpmusic.expect.rememberMyMixAudioLevel
 import com.maxrave.simpmusic.expect.ui.toImageBitmap
 import com.maxrave.simpmusic.extension.getStringBlocking
 import com.maxrave.simpmusic.ui.component.MyMixVisualizer
@@ -187,6 +186,20 @@ object MyMixPrefs {
     // for the case where the network is up but YouTube is unreachable (a VPN in a blocked region).
     const val OFFLINE_MODE = "my_mix_offline_mode"
 
+    // Fork: the last resolved field colours as "primaryArgb,secondaryArgb". The tab's composition is
+    // torn down on every leave and the ViewModel may go with it, so neither `remember` nor the VM
+    // survives a Home-and-back trip — DataStore does, and the field reopens on the playing track's
+    // colours instead of the stock ones.
+    const val FIELD_COLORS = "my_mix_field_colors"
+
+    // Fork: which source the tab last started (a mix id, "liked" or "offline"). Restored on entry so
+    // the field keeps following the SONG across tab switches instead of falling back to the mix.
+    const val STARTED_ID = "my_mix_started_id"
+
+    // Fork: the YouTube Liked Music playlist id. The repository prepends its own "VL".
+    // Public so the cache worker can protect these tracks from eviction.
+    const val YT_LIKED_PLAYLIST_ID = "LM"
+
     const val DEFAULT_COUNT = 100
     const val DEFAULT_INTERVAL_DAYS = 3
 }
@@ -196,12 +209,6 @@ object MyMixPrefs {
  * for it — so it needs an id that can never collide with one.
  */
 private const val LIKES_MOOD_ID = "liked"
-
-/**
- * Fork: the browseId of the YouTube "Liked Music" playlist, used only as the fallback source for the
- * "Любимые треки" pill when the local likes are empty. The repository prepends its own "VL".
- */
-private const val YT_LIKED_PLAYLIST_ID = "LM"
 
 /** Fork: the pseudo mood the offline cache is played from, so the hero knows what it started. */
 private const val OFFLINE_MODE_ID = "offline"
@@ -369,8 +376,10 @@ fun MyMixScreen(
     }
 
     var selectedMoodId by remember { mutableStateOf<String?>(null) }
+    var startedMixId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         selectedMoodId = dataStoreManager.getString(MyMixPrefs.MOOD_ID).first()?.takeIf { it.isNotBlank() }
+        startedMixId = dataStoreManager.getString(MyMixPrefs.STARTED_ID).first()?.takeIf { it.isNotBlank() }
     }
     val selectedMix = effectiveMixes.firstOrNull { it.browseId == selectedMoodId } ?: defaultMix
 
@@ -397,12 +406,21 @@ fun MyMixScreen(
     val lastFieldColors by viewModel.myMixFieldColors.collectAsStateWithLifecycle()
     val lastPrimary = lastFieldColors?.first?.toInt()?.let { Color(it) }
     val lastSecondary = lastFieldColors?.second?.toInt()?.let { Color(it) }
+    // Fork: the same pair from DataStore — the composition AND the ViewModel can both die on a tab
+    // switch, but DataStore survives, so re-entry still opens on the playing track's colours.
+    val savedFieldColorsRaw by dataStoreManager.getString(MyMixPrefs.FIELD_COLORS)
+        .collectAsStateWithLifecycle(initial = null)
+    val savedFieldColors = remember(savedFieldColorsRaw) {
+        savedFieldColorsRaw?.split(",")?.mapNotNull { it.toLongOrNull() }?.takeIf { it.size == 2 }
+    }
+    val savedPrimary = savedFieldColors?.get(0)?.toInt()?.let { Color(it) }
+    val savedSecondary = savedFieldColors?.get(1)?.toInt()?.let { Color(it) }
     // Fork: the stock field is a purple gradient, never the theme blue — it shows only until a real
     // palette (or the last one) arrives.
     val stockPrimary = Color(0xFF2A1040)
     val stockSecondary = Color(0xFF7C3AED)
-    val mixDominant = mixArtworkPalette?.dominantColorOrNull() ?: lastPrimary ?: stockPrimary
-    val mixVibrant = mixArtworkPalette?.vibrantColorOrNull() ?: lastSecondary ?: stockSecondary
+    val mixDominant = mixArtworkPalette?.dominantColorOrNull() ?: savedPrimary ?: lastPrimary ?: stockPrimary
+    val mixVibrant = mixArtworkPalette?.vibrantColorOrNull() ?: savedSecondary ?: lastSecondary ?: stockSecondary
     val playingDominantTarget = playingArtworkPalette?.dominantColorOrNull() ?: mixDominant
     val playingVibrantTarget = playingArtworkPalette?.vibrantColorOrNull() ?: mixVibrant
 
@@ -430,14 +448,9 @@ fun MyMixScreen(
     // and a frozen field. The player itself is the only thing that always knows the truth.
     val mediaPlayerHandler: MediaPlayerHandler = koinInject()
     var liveIsPlaying by remember { mutableStateOf(false) }
-    var audioSessionId by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) {
         while (true) {
             liveIsPlaying = runCatching { mediaPlayerHandler.player.isPlaying }.getOrDefault(false)
-            // Fork: the session id only changes on track/player swaps, so the assignment below
-            // recomposes at most then — never on the 500 ms tick itself.
-            val session = runCatching { mediaPlayerHandler.player.audioSessionId }.getOrDefault(0)
-            if (session != audioSessionId) audioSessionId = session
             delay(500)
         }
     }
@@ -468,10 +481,10 @@ fun MyMixScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // The source this screen last started: it decides whether the big button toggles the transport or
-    // starts the selection, and whether the field reacts to the music. [LIKES_MOOD_ID] is not a mix —
-    // it is the local favourites, which is why "Без настроения" became "Любимые треки".
-    var startedMixId by remember { mutableStateOf<String?>(null) }
+    // The source this screen last started (restored from DataStore above so it survives tab
+    // switches): it decides whether the big button toggles the transport or starts the selection,
+    // and whether the field follows the SONG. [LIKES_MOOD_ID] is not a mix — it is the local
+    // favourites, which is why "Без настроения" became "Любимые треки".
     val isLikesSelected = selectedMoodId == LIKES_MOOD_ID
 
     val heroDominant = if (startedMixId != null && nowPlaying?.songEntity != null) {
@@ -497,10 +510,21 @@ fun MyMixScreen(
     val progressAccent = oppositeForText(pageBackground)
 
     // Fork: persist the resolved pair while a real palette backs it, so the next entry opens on the
-    // playing track's colours instead of the stock ones.
-    LaunchedEffect(fieldColor, waveSecondary, hasAnyPalette) {
+    // playing track's colours instead of the stock ones. Keyed on the UNANIMATED targets — keying on
+    // the animated colours would write to disk on every frame of every cross-fade.
+    val fieldPrimaryTarget = if (startedMixId != null && nowPlaying?.songEntity != null) {
+        playingDominantTarget
+    } else {
+        mixDominant
+    }
+    val fieldSecondaryTarget = if (startedMixId != null) playingVibrantTarget else mixVibrant
+    LaunchedEffect(fieldPrimaryTarget, fieldSecondaryTarget, hasAnyPalette) {
         if (hasAnyPalette) {
-            viewModel.setMyMixFieldColors(fieldColor.toArgb().toLong(), waveSecondary.toArgb().toLong())
+            viewModel.setMyMixFieldColors(fieldPrimaryTarget.toArgb().toLong(), fieldSecondaryTarget.toArgb().toLong())
+            dataStoreManager.putString(
+                MyMixPrefs.FIELD_COLORS,
+                "${fieldPrimaryTarget.toArgb()},${fieldSecondaryTarget.toArgb()}",
+            )
         }
     }
 
@@ -536,14 +560,6 @@ fun MyMixScreen(
         }
     }
     val offline = (!isOnline && !probeSucceeded) || manualOffline
-
-    // Fork: the loudness tap lives and dies with this tab. The state is deliberately kept
-    // without `by` and read only inside the visualizer's draw pass, so the ~10 Hz audio callbacks
-    // repaint the field without ever recomposing the screen.
-    val audioLevel = rememberMyMixAudioLevel(
-        isActive = isPlayingNow && isScreenVisible,
-        sessionId = audioSessionId,
-    )
 
     // Fork: the like button has to land in YOUTUBE's liked songs, not only in the app's local list. The
     // local toggle stays because the rest of the app reads that flag, but the account is what the user
@@ -616,6 +632,7 @@ fun MyMixScreen(
                 )
                 sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
                 startedMixId = mix.browseId
+                dataStoreManager.putString(MyMixPrefs.STARTED_ID, mix.browseId)
             } finally {
                 isPreparing = false
             }
@@ -636,7 +653,7 @@ fun MyMixScreen(
                 val fetched = if (!offline) {
                     withTimeoutOrNull(30_000) {
                         playlistRepository.getPlaylistData(
-                            playlistId = YT_LIKED_PLAYLIST_ID,
+                            playlistId = MyMixPrefs.YT_LIKED_PLAYLIST_ID,
                             viewString = getStringBlocking(Res.string.view_count),
                         ).first()
                     }
@@ -664,6 +681,7 @@ fun MyMixScreen(
                 )
                 sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
                 startedMixId = LIKES_MOOD_ID
+                dataStoreManager.putString(MyMixPrefs.STARTED_ID, LIKES_MOOD_ID)
             } finally {
                 isPreparing = false
             }
@@ -706,6 +724,7 @@ fun MyMixScreen(
                 )
                 sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
                 startedMixId = OFFLINE_MODE_ID
+                dataStoreManager.putString(MyMixPrefs.STARTED_ID, OFFLINE_MODE_ID)
             } finally {
                 isPreparing = false
             }
@@ -766,7 +785,6 @@ fun MyMixScreen(
             // know whether the app is in the background. It stops the sweep and its frames when this
             // is false, and picks the clock up from where it stopped when it comes back.
                         isVisible = isScreenVisible,
-                        audio = { audioLevel.value },
             // Fork: the FIGURE (blob, rays, particles) is anchored behind the cover and follows it
             // on scroll, while the field itself stays fullscreen with no box around it. Read inside
             // the draw pass, so scrolling repaints instead of recomposing.

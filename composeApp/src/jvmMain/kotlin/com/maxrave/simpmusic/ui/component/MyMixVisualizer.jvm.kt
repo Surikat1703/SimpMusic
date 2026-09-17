@@ -3,7 +3,6 @@ package com.maxrave.simpmusic.ui.component
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import com.maxrave.simpmusic.expect.MyMixAudio
 
 /** Desktop actual: the same looping Canvas composition as the Android fallback. */
 @Composable
@@ -13,7 +12,6 @@ actual fun MyMixVisualizer(
     modifier: Modifier,
     isPlaying: Boolean,
     isVisible: Boolean,
-    audio: () -> MyMixAudio,
     figureCenterY: () -> Float,
 ) {
     MyMixWave(
@@ -22,7 +20,6 @@ actual fun MyMixVisualizer(
         modifier = modifier,
         isPlaying = isPlaying,
         isVisible = isVisible,
-        audio = audio,
         figureCenterY = figureCenterY,
     )
 }
