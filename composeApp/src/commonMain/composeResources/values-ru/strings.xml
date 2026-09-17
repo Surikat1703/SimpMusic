@@ -551,6 +551,7 @@
     <string name="my_mix_preparing">Подготовка…</string>
     <string name="my_mix_mood">Настроение</string>
     <string name="my_mix_no_mood">Любимые треки</string>
+    <string name="my_mix_supermix">Мой супермикс</string>
     <string name="my_mix_all_moods">Все настроения</string>
     <string name="my_mix_all_mixes">Все миксы</string>
     <string name="my_mix_auto_cache">Автокэш моего микса</string>

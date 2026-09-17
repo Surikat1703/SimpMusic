@@ -14,7 +14,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -144,9 +143,11 @@ private fun MyMixShaderField(
             onDrawBehind {
                 val level = energy
                 val t = clock.value
-                val grey = Color(0xFF6B6B6B)
-                val hot = vivid(lerp(grey, colorPrimary, level))
-                val cool = vivid(lerp(grey, colorSecondary, level))
+                // Fork: the field lives in the COVER's colours at all times, playing or not — a paused
+                // track must leave the page filled with its own hue, not with grey. The grey wash was
+                // mixed in by the level, so pausing erased the artwork entirely.
+                val hot = vivid(colorPrimary)
+                val cool = vivid(colorSecondary)
 
                 val beat = (t * bpm / 60f) % 1f
                 val pulse = (exp(-5.0f * beat) * level).coerceIn(0f, 1f)
@@ -155,15 +156,16 @@ private fun MyMixShaderField(
                 // Flutter and here, so the field looks the same on both.
                 shader.setFloatUniform("uResolution", size.width, size.height)
                 shader.setFloatUniform("uTime", t)
-                // 120 BPM is the neutral speed the shader was written around; a paused track slows it
-                // down instead of freezing, which is what keeps the field alive behind a stopped song.
-                shader.setFloatUniform("uBpmSpeed", (bpm.coerceAtLeast(1f) / 120f) * (0.55f + 0.45f * level))
+                // Fork: the tempo of the motion follows the OUTPUT LEVEL, not the track's BPM — quiet
+                // passages crawl and loud ones race, which is the reaction the ear expects. The BPM
+                // figure stays in the signature for a future real beat detector.
+                shader.setFloatUniform("uBpmSpeed", 0.45f + 0.85f * level)
                 shader.setFloatUniform(
                     "uAmplitude",
                     (
-                        amplitude.coerceIn(0f, 1f) * level * 0.75f +
-                            pulse * 0.25f +
-                            bass.coerceIn(0f, 1f) * level * 0.25f
+                        amplitude.coerceIn(0f, 1f) * (0.20f + 0.80f * level) +
+                            pulse * 0.35f +
+                            bass.coerceIn(0f, 1f) * level * 0.30f
                         ).coerceIn(0f, 1f) * intensity,
                 )
                 shader.setFloatUniform("uColor1", hot.red, hot.green, hot.blue)
@@ -256,15 +258,19 @@ half4 main(float2 fragCoord) {
     float2 res = max(uResolution, float2(1.0, 1.0));
     float2 uv = fragCoord / res;
 
-    // Animation time, scaled by the BPM
+    // Animation time, scaled by the loudness-driven speed
+    float amp = clamp(uAmplitude, 0.0, 1.0);
     float t = uTime * 0.3 * uBpmSpeed;
 
-    // Deformation from noise and bass
-    float noise1 = snoise(uv * 2.0 + float2(t * 0.5, t * 0.3));
-    float noise2 = snoise(uv * 3.0 - float2(t * 0.2, noise1));
+    // Deformation from noise and bass. Fork: the noise is SCALED by the amplitude, so loud passages
+    // break the field into many small shapes and quiet ones leave a few broad ones — the shapes change
+    // size with the level, which is the reaction the user asked for.
+    float scale = 2.0 + amp * 1.8;
+    float noise1 = snoise(uv * scale + float2(t * 0.5, t * 0.3));
+    float noise2 = snoise(uv * (scale + 1.0) - float2(t * 0.2, noise1));
 
     // Pulse from the amplitude (loudness)
-    float wave = noise2 + (uAmplitude * 0.3 * sin(uv.x * 10.0 + t * 5.0));
+    float wave = noise2 + (amp * 0.9 * sin(uv.x * 10.0 + t * 5.0));
 
     // Colour mixing
     float3 color = mix(uColor1, uColor2, clamp(wave + 0.5, 0.0, 1.0));

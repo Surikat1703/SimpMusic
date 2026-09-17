@@ -615,6 +615,7 @@
     <string name="my_mix_preparing">Preparing…</string>
     <string name="my_mix_mood">Mood</string>
     <string name="my_mix_no_mood">Favourite tracks</string>
+    <string name="my_mix_supermix">My Supermix</string>
     <string name="my_mix_all_moods">All moods</string>
     <string name="my_mix_all_mixes">All mixes</string>
     <string name="my_mix_auto_cache">Auto-cache my mix</string>

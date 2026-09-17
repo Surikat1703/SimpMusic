@@ -3,6 +3,7 @@ package com.maxrave.simpmusic.ui.screen.library
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -65,6 +66,7 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.manager.DataStoreManager
+import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.domain.mediaservice.handler.PlaylistType as QueuePlaylistType
 import com.maxrave.domain.mediaservice.handler.QueueData
 import com.maxrave.domain.repository.PlaylistRepository
@@ -87,6 +89,7 @@ import com.maxrave.simpmusic.viewModel.UIEvent
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.http.Url
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -141,6 +144,8 @@ import com.maxrave.simpmusic.ui.icon.UnfoldMore
 import com.maxrave.simpmusic.ui.icon.MoreVert
 import simpmusic.composeapp.generated.resources.my_mix_all_moods
 import simpmusic.composeapp.generated.resources.my_mix_add_to_likes
+import simpmusic.composeapp.generated.resources.my_mix_supermix
+import kotlin.math.abs
 import kotlin.time.Clock
 
 /**
@@ -189,6 +194,43 @@ private const val YT_LIKED_PLAYLIST_ID = "LM"
  * it is, EMPTY INCLUDED, because an empty name is exactly how the caller recognises an entry that is
  * not a mood. Callers that need a label anyway fall back to the raw title themselves.
  */
+/**
+ * Fork: rotates a colour's hue by [amount] (0..1 of a full turn) while keeping its saturation and
+ * value, so the second field colour is unmistakably part of the same artwork. Written out by hand
+ * because this file is common code and android.graphics.Color is not available here.
+ */
+private fun shiftHue(color: Color, amount: Float): Color {
+    val r = color.red
+    val g = color.green
+    val b = color.blue
+    val max = maxOf(r, g, b)
+    val min = minOf(r, g, b)
+    val delta = max - min
+    var h = when {
+        delta == 0f -> 0f
+        max == r -> ((g - b) / delta) % 6f
+        max == g -> (b - r) / delta + 2f
+        else -> (r - g) / delta + 4f
+    } * 60f
+    if (h < 0f) h += 360f
+    val s = if (max == 0f) 0f else delta / max
+    val v = max
+
+    val rotated = (h + amount * 360f) % 360f
+    val c = v * s
+    val x = c * (1f - abs((rotated / 60f) % 2f - 1f))
+    val m = v - c
+    val rgb = when {
+        rotated < 60f -> Triple(c, x, 0f)
+        rotated < 120f -> Triple(x, c, 0f)
+        rotated < 180f -> Triple(0f, c, x)
+        rotated < 240f -> Triple(0f, x, c)
+        rotated < 300f -> Triple(x, 0f, c)
+        else -> Triple(c, 0f, x)
+    }
+    return Color(rgb.first + m, rgb.second + m, rgb.third + m, color.alpha)
+}
+
 private fun cleanMoodName(raw: String): String {
     val deNumbered = raw.replace(Regex("""\s*[#№]?\s*\d+\s*$"""), "").trim()
     return deNumbered
@@ -261,12 +303,22 @@ fun MyMixScreen(
     // Fork: YouTube ships the shelf as numbered duplicates ("Mix 1", "Mix 2", "Микс 3") and repeats
     // the word "микс" in every title, so a row of eight identical-looking pills is really three
     // moods. One entry per cleaned name is kept, which drops both the numbering and the copies.
-    val moodMixes = remember(allMixes, nameFiltered) {
+    // Fork: "Мой супермикс" is the personal mix, not a mood — and its own name cleans down to nothing,
+    // which is why the filter below used to drop it entirely. It is pulled out here instead, excluded
+    // from the mood list by id and shown first, so it can be emphasised without its title polluting
+    // every other entry.
+    val superMix = remember(allMixes, defaultMix) {
+        allMixes.firstOrNull { mix ->
+            val title = mix.title.lowercase()
+            "супер" in title || "super" in title
+        } ?: defaultMix
+    }
+    val moodMixes = remember(allMixes, nameFiltered, superMix) {
         val source = nameFiltered.ifEmpty { allMixes }
         val seen = mutableSetOf<String>()
         source.filter { mix ->
             val name = cleanMoodName(mix.title)
-            name.isNotBlank() && seen.add(name.lowercase())
+            name.isNotBlank() && mix.browseId != superMix?.browseId && seen.add(name.lowercase())
         }
     }
 
@@ -298,9 +350,9 @@ fun MyMixScreen(
         targetValue = dominantColorState.color,
         animationSpec = tween(700),
     )
-    // Fork: once this tab has started something, the field follows the SONG rather than the mix, so
-    // every skip hands over that track's own colour — quickly (350 ms) so the change is felt at once
-    // without ever looking like a cut.
+    // Fork: the field follows the SONG, so every skip hands over that track's own colour — slowly
+    // enough that the handover reads as a cross-fade rather than a cut, which is why the tween is long
+    // and the fade it drives is long too.
     val playingArtworkUrl = nowPlaying?.songEntity?.thumbnails
     val playingColorState = rememberDominantColorState(
         defaultColor = MaterialTheme.colorScheme.primary,
@@ -312,12 +364,24 @@ fun MyMixScreen(
     }
     val playingDominant by animateColorAsState(
         targetValue = playingColorState.color,
-        animationSpec = tween(350),
+        animationSpec = tween(900),
     )
 
     var isPreparing by remember { mutableStateOf(false) }
     var playFailed by remember { mutableStateOf(false) }
     var showAllMoods by remember { mutableStateOf(false) }
+
+    // Fork: the transport state carried by the Flow goes stale while the app is in the background — the
+    // player keeps playing, but no isPlaying change is delivered, so coming back showed a paused track
+    // and a frozen field. The player itself is the only thing that always knows the truth.
+    val mediaPlayerHandler: MediaPlayerHandler = koinInject()
+    var liveIsPlaying by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            liveIsPlaying = runCatching { mediaPlayerHandler.player.isPlaying }.getOrDefault(false)
+            delay(500)
+        }
+    }
 
     // The source this screen last started: it decides whether the big button toggles the transport or
     // starts the selection, and whether the field reacts to the music. [LIKES_MOOD_ID] is not a mix —
@@ -333,7 +397,44 @@ fun MyMixScreen(
     // A near-white cover would paint a near-white field, so a pale colour is swapped for the app
     // accent: the hero has to stay saturated for white text to sit on it.
     val fieldColor = if (heroDominant.luminance() > 0.72f) MaterialTheme.colorScheme.primary else heroDominant
-    val waveSecondary = MaterialTheme.colorScheme.primary
+    // Fork: BOTH field colours come from the cover. The second one is the cover's own hue pushed a
+    // little way round the wheel, so a red sleeve yields a red-to-magenta field rather than red-to-the-
+    // app's-accent, and the animation carries the artwork's colours instead of the theme's.
+    val waveSecondary = remember(fieldColor) { shiftHue(fieldColor, 0.42f) }
+
+    // Fork: the field was frozen in the background because the animation only ran while the tab was
+    // composed, and it read a transport flag that goes stale there.
+    val isPlayingNow = if (startedMixId != null) liveIsPlaying else controllerState.isPlaying
+
+    // Fork: the like button has to land in YOUTUBE's liked songs, not only in the app's local list. The
+    // local toggle stays because the rest of the app reads that flag, but the account is what the user
+    // asked for — and the icon is driven by the account, so a track already liked there shows as added
+    // the moment its page appears instead of always reading "not in the playlist".
+    val playingVideoId = nowPlaying?.songEntity?.videoId
+    var youTubeLiked by remember { mutableStateOf(controllerState.isLiked) }
+    LaunchedEffect(playingVideoId, controllerState.isLiked) {
+        youTubeLiked = controllerState.isLiked
+        playingVideoId?.let { videoId ->
+            youTubeLiked = runCatching { songRepository.getLikeStatus(videoId).first() }
+                .getOrDefault(youTubeLiked)
+        }
+    }
+
+    fun toggleLike() {
+        val videoId = playingVideoId ?: return
+        val target = !youTubeLiked
+        youTubeLiked = target
+        sharedViewModel.onUIEvent(UIEvent.ToggleLike)
+        scope.launch {
+            runCatching {
+                if (target) {
+                    songRepository.addToYouTubeLiked(videoId).first()
+                } else {
+                    songRepository.removeFromYouTubeLiked(videoId).first()
+                }
+            }
+        }
+    }
 
     fun playMix(mix: PlaylistsResult) {
         if (isPreparing) return
@@ -439,7 +540,7 @@ fun MyMixScreen(
             modifier = Modifier.fillMaxSize(),
             // The field answers to the transport, not to this tab's own player: music playing from
             // anywhere lights it up, and pausing anywhere drops it back to grey.
-            isPlaying = controllerState.isPlaying,
+            isPlaying = isPlayingNow,
             amplitude = controllerState.volume,
             bpm = 96f,
         )
@@ -506,12 +607,12 @@ fun MyMixScreen(
                     if (startedMixId != null && nowSong != null && !isPreparing) {
                         MyMixNowPlaying(
                             song = nowSong,
-                            isPlaying = controllerState.isPlaying,
-                            isLiked = controllerState.isLiked,
+                            isPlaying = isPlayingNow,
+                            isLiked = youTubeLiked,
                             accent = playingDominant,
                             timeline = timelineState,
                             onOpenPlayer = onOpenNowPlaying,
-                            onToggleLike = { sharedViewModel.onUIEvent(UIEvent.ToggleLike) },
+                            onToggleLike = { toggleLike() },
                             onPlayPause = { sharedViewModel.onUIEvent(UIEvent.PlayPause) },
                             onNext = { sharedViewModel.onUIEvent(UIEvent.Next) },
                             onPrevious = { sharedViewModel.onUIEvent(UIEvent.Previous) },
@@ -568,6 +669,24 @@ fun MyMixScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 contentPadding = PaddingValues(horizontal = 2.dp),
                             ) {
+                                // Fork: the personal mix leads the row and is drawn differently, because
+                                // it is the one entry that follows the listener rather than a theme.
+                                superMix?.let { mix ->
+                                    item(key = "supermix") {
+                                        MoodPill(
+                                            label = stringResource(Res.string.my_mix_supermix),
+                                            selected = !isLikesSelected && mix.browseId == selectedMix?.browseId,
+                                            emphasized = true,
+                                            onClick = {
+                                                selectedMoodId = mix.browseId
+                                                scope.launch {
+                                                    dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId)
+                                                }
+                                                playMix(mix)
+                                            },
+                                        )
+                                    }
+                                }
                                 item(key = "liked") {
                                     MoodPill(
                                         label = stringResource(Res.string.my_mix_no_mood),
@@ -944,6 +1063,10 @@ private fun MyMixNowPlaying(
                 // bar the user can actually see.
                 Slider(
                     value = sliderValue,
+                    // Fork: the slider carries the same 0..100 the rest of the player speaks. Without a
+                    // range it defaults to 0f..1f, so every drag was clamped to 1 and the seek that came
+                    // out of it was a jump to the very beginning — the track restarted instead of moving.
+                    valueRange = 0f..100f,
                     onValueChange = { value ->
                         isSliding = true
                         sliderValue = value
@@ -1027,11 +1150,23 @@ private fun MyMixNowPlaying(
 private fun MoodPill(
     label: String,
     selected: Boolean,
+    emphasized: Boolean = false,
     onClick: () -> Unit,
 ) {
     Surface(
-        color = if (selected) Color.White else Color.White.copy(alpha = 0.18f),
+        // Fork: the personal mix is set apart with a hairline rim and a touch more body, without
+        // becoming a different component — it still has to read as one of the moods.
+        color = when {
+            selected -> Color.White
+            emphasized -> Color.White.copy(alpha = 0.30f)
+            else -> Color.White.copy(alpha = 0.18f)
+        },
         shape = RoundedCornerShape(50),
+        border = if (emphasized && !selected) {
+            BorderStroke(1.dp, Color.White.copy(alpha = 0.55f))
+        } else {
+            null
+        },
         modifier = Modifier
             .clip(RoundedCornerShape(50))
             .clickable { onClick() },
