@@ -20,6 +20,7 @@ uniform float uTime;
 uniform float4 uColor1;
 uniform float4 uColor2;
 uniform float uAudio;
+uniform float2 uCenter;
 
 vec3 mod289(vec3 x) {
     return x - floor(x * (1.0 / 289.0)) * 289.0;
@@ -79,8 +80,19 @@ half4 main(vec2 fragCoord) {
     float angle = (uTime / cycleDuration) * 6.28318530718;
     vec2 loopTime = vec2(cos(angle), sin(angle)) * 2.0;
 
-    vec2 uv = (fragCoord - 0.5 * uResolution) / uResolution.y;
-    uv.y += 0.14;
+    vec2 uv = (fragCoord - uCenter) / uResolution.y;
+
+    float audio = clamp(uAudio, 0.0, 1.0);
+    float energy = 0.55 + 0.45 * audio;
+
+    // Fork: a light smooth shake over the WHOLE field on bass — the offset itself comes from slow
+    // looped noise scaled by the smoothed level, so it sways instead of jittering.
+    vec2 shakeVec = vec2(
+        snoise(uv * 0.8 + loopTime * 0.5, loopTime),
+        snoise(uv * 0.8 - loopTime * 0.5, loopTime)
+    );
+    uv += shakeVec * audio * 0.035;
+
     float radius = length(uv);
     float polarAngle = atan(uv.y, uv.x);
     vec2 direction = vec2(cos(polarAngle), sin(polarAngle));
@@ -90,10 +102,7 @@ half4 main(vec2 fragCoord) {
     float veilNoise = snoise(uv * 4.6 - loopTime.yx * 1.2, loopTime);
     float edgeNoise = snoise(vec2(radius * 3.2, polarAngle * 2.6) + loopTime * 1.1, loopTime);
 
-    float audio = clamp(uAudio, 0.0, 1.0);
-    float energy = 0.55 + 0.45 * audio;
-
-    float bodyRadius = 0.46 + bodyNoise * 0.16;
+    float bodyRadius = 0.68 + bodyNoise * 0.16;
     float body = 1.0 - smoothstep(bodyRadius - 0.30, bodyRadius, radius);
     body = pow(body, 1.9);
 
@@ -111,6 +120,21 @@ half4 main(vec2 fragCoord) {
     vec3 colour = mix(uColor2.rgb * 0.90, uColor1.rgb, light);
     colour += rayColour * rays * 0.55;
     colour += uColor1.rgb * veil * 0.25;
+    // Fork: sound-driven particles — a drifting hash sparkle field whose twinkle loop is a multiple
+    // of the 180-second cycle, so it stays seamless, and whose brightness follows the level.
+    vec2 particleUv = uv * 7.0 + loopTime * 0.8;
+    vec2 cell = floor(particleUv);
+    vec2 cellFract = fract(particleUv) - 0.5;
+    float cellHash = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+    vec2 cellOffset = vec2(
+        fract(sin(dot(cell + 19.7, vec2(127.1, 311.7))) * 43758.5453),
+        fract(sin(dot(cell + 57.3, vec2(127.1, 311.7))) * 43758.5453)
+    ) - 0.5;
+    float sparkleDist = length(cellFract - cellOffset * 0.7);
+    float twinkle = 0.5 + 0.5 * sin(angle * 24.0 + cellHash * 6.28318530718);
+    float sparkle = smoothstep(0.10, 0.0, sparkleDist) * step(0.82, cellHash) * twinkle;
+    sparkle *= (0.25 + 0.75 * audio) * exp(-radius * 0.9);
+    colour += rayColour * sparkle * 0.6;
     colour = mix(colour, uColor2.rgb * 0.75, (1.0 - vignette) * 0.45);
     float alpha = clamp(light * 0.92 + veil * 0.25, 0.0, 1.0);
     return half4(half(colour.x), half(colour.y), half(colour.z), half(alpha));
@@ -126,6 +150,7 @@ actual fun MyMixVisualizer(
     isPlaying: Boolean,
     isVisible: Boolean,
     audioLevel: () -> Float,
+    figureCenterY: () -> Float,
 ) {
     val clock = rememberMyMixClock(isPlaying = isPlaying, isVisible = isVisible)
     val smoothAudio = rememberSmoothedAudio(isPlaying = isPlaying, isVisible = isVisible, audio = audioLevel)
@@ -147,6 +172,10 @@ actual fun MyMixVisualizer(
                 shader.setFloatUniform("uTime", clock.value)
                 shader.setFloatUniform("uAudio", smoothAudio.value)
                 shader.setFloatUniform("uResolution", floatArrayOf(size.width, size.height))
+                shader.setFloatUniform(
+                    "uCenter",
+                    floatArrayOf(size.width * 0.5f, size.height * figureCenterY().coerceIn(-0.5f, 1.5f)),
+                )
                 shader.setFloatUniform(
                     "uColor1",
                     floatArrayOf(
@@ -181,5 +210,6 @@ actual fun MyMixVisualizer(
         isPlaying = isPlaying,
         isVisible = isVisible,
         audioLevel = audioLevel,
+        figureCenterY = figureCenterY,
     )
 }

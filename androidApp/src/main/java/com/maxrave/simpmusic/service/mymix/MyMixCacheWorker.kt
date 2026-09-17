@@ -93,7 +93,10 @@ class MyMixCacheWorker(
         var budget = trackCount
 
         for (track in tracks) {
-            if (budget <= 0) break
+            // Fork: the plan itself is capped at the user's count. It used to break on the download
+            // budget only, so every already-downloaded track the loop skipped still grew the plan —
+            // "downloaded N of M" showed the whole radio instead of the chosen count.
+            if (planned.size >= trackCount) break
             planned.add(track.videoId)
             val entity = songRepository.getSongById(track.videoId).firstOrNull()
             val isDownloaded = entity?.downloadState == DownloadState.STATE_DOWNLOADED

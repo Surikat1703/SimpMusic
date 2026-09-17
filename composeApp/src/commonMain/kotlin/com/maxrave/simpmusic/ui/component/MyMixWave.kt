@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.unit.dp
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
@@ -94,6 +95,7 @@ fun MyMixWave(
     isPlaying: Boolean = true,
     isVisible: Boolean = true,
     audioLevel: () -> Float = { 0f },
+    figureCenterY: () -> Float = { 0.36f },
 ) {
     val clock = rememberMyMixClock(isPlaying = isPlaying, isVisible = isVisible)
     val smoothAudio = rememberSmoothedAudio(isPlaying = isPlaying, isVisible = isVisible, audio = audioLevel)
@@ -103,6 +105,18 @@ fun MyMixWave(
         label = "myMixLevel",
     )
     val rayAngles = remember { FloatArray(RAY_COUNT) { (it.toFloat() / RAY_COUNT) * TAU } }
+    // Fork: precomputed once — golden-angle spread, radius band, dot size, twinkle phase. Nothing
+    // per-frame here allocates except the draw itself.
+    val particles = remember {
+        Array(36) { i ->
+            floatArrayOf(
+                (i * 2.399963f) % TAU,
+                0.35f + (i % 9) * 0.09f,
+                2f + (i % 5),
+                (i * 1.7f) % TAU,
+            )
+        }
+    }
 
     if (!isVisible || level <= 0.002f) {
         return
@@ -121,7 +135,10 @@ fun MyMixWave(
         val loopY = sin(angle) * LOOP_RADIUS
         val audio = smoothAudio.value
         val energy = 0.55f + 0.45f * audio
-        val center = Offset(width / 2f, height * 0.36f)
+        val center = Offset(width / 2f, height * figureCenterY().coerceIn(-0.5f, 1.5f)) +
+            // Fork: a light smooth shake over the whole figure on bass — looped drift scaled by the
+            // smoothed level, so it sways instead of jittering.
+            Offset(loopX * audio * radius * 0.012f, loopY * audio * radius * 0.012f)
         val radius = max(width, height) * 0.58f
         val blend = lerp(colorPrimary, colorSecondary, 0.45f)
         val rayCore = lerp(colorPrimary, Color.White, 0.45f)
@@ -220,5 +237,25 @@ fun MyMixWave(
             center = center,
             blendMode = BlendMode.Plus,
         )
+
+        // Fork: sound-driven particles mirroring the AGSL sparkle field — precomputed drifters whose
+        // twinkle runs 24 cycles per 180-second loop (seamless) and whose brightness follows the level.
+        val dotBase = 3.dp.toPx()
+        for (particle in particles) {
+            val particleAngle = particle[0] + loopX * 0.03f
+            val particleRadius = radius * particle[1] * (0.9f + 0.2f * audio)
+            val twinkle = 0.5f + 0.5f * sin(time * TAU * 24f / MY_MIX_CYCLE_SECONDS + particle[3])
+            val particleAlpha = 0.5f * twinkle * (0.25f + 0.75f * audio) * level
+            if (particleAlpha > 0.01f) {
+                drawCircle(
+                    color = rayCore.copy(alpha = particleAlpha),
+                    radius = particle[2] * dotBase * 0.5f,
+                    center = center + Offset(
+                        cos(particleAngle) * particleRadius,
+                        sin(particleAngle) * particleRadius,
+                    ),
+                )
+            }
+        }
     }
 }

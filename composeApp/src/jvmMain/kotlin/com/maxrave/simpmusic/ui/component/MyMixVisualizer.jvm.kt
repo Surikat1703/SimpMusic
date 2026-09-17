@@ -13,6 +13,7 @@ actual fun MyMixVisualizer(
     isPlaying: Boolean,
     isVisible: Boolean,
     audioLevel: () -> Float,
+    figureCenterY: () -> Float,
 ) {
     MyMixWave(
         colorPrimary = colorPrimary,
@@ -21,5 +22,6 @@ actual fun MyMixVisualizer(
         isPlaying = isPlaying,
         isVisible = isVisible,
         audioLevel = audioLevel,
+        figureCenterY = figureCenterY,
     )
 }

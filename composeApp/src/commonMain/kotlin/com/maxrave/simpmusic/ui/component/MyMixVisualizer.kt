@@ -19,6 +19,9 @@ import androidx.compose.ui.graphics.Color
  * @param isPlaying fades the field in and out without snapping.
  * @param isVisible stops all frame work while the My Mix tab is in the background.
  * @param audioLevel smoothed loudness 0..1 read inside the draw pass, never in composition.
+ * @param figureCenterY the figure's vertical centre as a fraction of the field height, read inside
+ * the draw pass — this is what pins the blob, the rays and the particles behind the cover while
+ * the field itself stays fullscreen with no box around it.
  */
 @Composable
 expect fun MyMixVisualizer(
@@ -28,4 +31,5 @@ expect fun MyMixVisualizer(
     isPlaying: Boolean = true,
     isVisible: Boolean = true,
     audioLevel: () -> Float = { 0f },
+    figureCenterY: () -> Float = { 0.36f },
 )
