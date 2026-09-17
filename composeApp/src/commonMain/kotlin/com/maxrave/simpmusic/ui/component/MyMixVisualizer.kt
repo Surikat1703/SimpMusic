@@ -3,6 +3,7 @@ package com.maxrave.simpmusic.ui.component
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import com.maxrave.simpmusic.expect.MyMixAudio
 
 /**
  * The animated My Mix background.
@@ -18,10 +19,8 @@ import androidx.compose.ui.graphics.Color
  * @param colorSecondary the darker colour revealed while the field fades out.
  * @param isPlaying fades the field in and out without snapping.
  * @param isVisible stops all frame work while the My Mix tab is in the background.
- * @param audioLevel smoothed loudness 0..1 read inside the draw pass, never in composition.
- * @param figureCenterY the figure's vertical centre as a fraction of the field height, read inside
- * the draw pass — this is what pins the blob, the rays and the particles behind the cover while
- * the field itself stays fullscreen with no box around it.
+ * @param audio smoothed loudness read inside the draw pass, never in composition — volume moves
+ * only the particles, bass moves the stripes.
  */
 @Composable
 expect fun MyMixVisualizer(
@@ -30,6 +29,6 @@ expect fun MyMixVisualizer(
     modifier: Modifier = Modifier,
     isPlaying: Boolean = true,
     isVisible: Boolean = true,
-    audioLevel: () -> Float = { 0f },
+    audio: () -> MyMixAudio = { MyMixAudio() },
     figureCenterY: () -> Float = { 0.36f },
 )

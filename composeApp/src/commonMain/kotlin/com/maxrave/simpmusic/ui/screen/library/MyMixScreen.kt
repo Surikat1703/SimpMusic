@@ -765,8 +765,8 @@ fun MyMixScreen(
             // Fork: recycling the GPU and the frame clock is the caller's job — the visualizer cannot
             // know whether the app is in the background. It stops the sweep and its frames when this
             // is false, and picks the clock up from where it stopped when it comes back.
-            isVisible = isScreenVisible,
-            audioLevel = { audioLevel.value },
+                        isVisible = isScreenVisible,
+                        audio = { audioLevel.value },
             // Fork: the FIGURE (blob, rays, particles) is anchored behind the cover and follows it
             // on scroll, while the field itself stays fullscreen with no box around it. Read inside
             // the draw pass, so scrolling repaints instead of recomposing.

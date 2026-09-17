@@ -27,7 +27,7 @@ import kotlin.math.sqrt
  * draw pass reads a calm number instead of a jitter.
  */
 @Composable
-actual fun rememberMyMixAudioLevel(isActive: Boolean, sessionId: Int): State<Float> {
+actual fun rememberMyMixAudioLevel(isActive: Boolean, sessionId: Int): State<MyMixAudio> {
     val context = LocalContext.current
     var granted by remember {
         mutableStateOf(
@@ -44,11 +44,11 @@ actual fun rememberMyMixAudioLevel(isActive: Boolean, sessionId: Int): State<Flo
         if (!granted) launcher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
-    val level = remember { mutableStateOf(0f) }
+    val level = remember { mutableStateOf(MyMixAudio()) }
 
     LaunchedEffect(granted, sessionId, isActive) {
         if (!isActive || !granted || sessionId <= 0) {
-            level.value = 0f
+            level.value = MyMixAudio()
             return@LaunchedEffect
         }
         var visualizer: Visualizer? = null
@@ -56,21 +56,27 @@ actual fun rememberMyMixAudioLevel(isActive: Boolean, sessionId: Int): State<Flo
             var smoothedRms = 0f
             var smoothedBass = 0f
             var lastPublish = 0L
-            // Fork: the track's own running median is the baseline — the last ~30 seconds of level
-            // samples live here, so quiet masters and loud masters both centre on the stock look.
-            val window = ArrayDeque<Float>()
+            // Fork: each channel carries its own running median (~30 s window) as the baseline, so
+            // quiet and loud masters both centre on the stock look. Volume drives ONLY the
+            // particles; bass drives the stripes — their count, brightness, gradient and shake.
+            val volumeWindow = ArrayDeque<Float>()
+            val bassWindow = ArrayDeque<Float>()
+            fun relative(window: ArrayDeque<Float>, blend: Float): Float {
+                window.addLast(blend)
+                if (window.size > 300) window.removeFirst()
+                val median = window.sorted()[window.size / 2]
+                return (0.5f + (blend - median) * 4f).coerceIn(0f, 1f)
+            }
             val publish = {
                 val now = System.currentTimeMillis()
                 if (now - lastPublish >= 100L) {
                     lastPublish = now
-                    // Fork: square-root gain first (raw numbers sit around 0.1–0.3), then deviation
-                    // from the median: at the median the field runs its stock composition (0.5),
-                    // louder passages flare toward 1, quieter ones calm toward 0.
-                    val blend = sqrt((0.25f * smoothedRms + 0.75f * smoothedBass).coerceIn(0f, 1f))
-                    window.addLast(blend)
-                    if (window.size > 300) window.removeFirst()
-                    val median = window.sorted()[window.size / 2]
-                    level.value = (0.5f + (blend - median) * 4f).coerceIn(0f, 1f)
+                    val volumeBlend = sqrt(smoothedRms.coerceIn(0f, 1f))
+                    val bassBlend = sqrt((0.25f * smoothedRms + 0.75f * smoothedBass).coerceIn(0f, 1f))
+                    level.value = MyMixAudio(
+                        volume = relative(volumeWindow, volumeBlend),
+                        bass = relative(bassWindow, bassBlend),
+                    )
                 }
             }
             visualizer =
@@ -121,7 +127,7 @@ actual fun rememberMyMixAudioLevel(isActive: Boolean, sessionId: Int): State<Flo
                     enabled = true
                 }
         } catch (_: Exception) {
-            level.value = 0f
+            level.value = MyMixAudio()
         }
 
         try {
@@ -131,7 +137,7 @@ actual fun rememberMyMixAudioLevel(isActive: Boolean, sessionId: Int): State<Flo
                 visualizer?.enabled = false
                 visualizer?.release()
             }
-            level.value = 0f
+            level.value = MyMixAudio()
         }
     }
 
