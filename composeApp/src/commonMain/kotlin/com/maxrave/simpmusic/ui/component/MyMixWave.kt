@@ -135,11 +135,11 @@ fun MyMixWave(
         val loopY = sin(angle) * LOOP_RADIUS
         val audio = smoothAudio.value
         val energy = 0.55f + 0.45f * audio
+        val radius = max(width, height) * 0.58f
         val center = Offset(width / 2f, height * figureCenterY().coerceIn(-0.5f, 1.5f)) +
             // Fork: a light smooth shake over the whole figure on bass — looped drift scaled by the
             // smoothed level, so it sways instead of jittering.
             Offset(loopX * audio * radius * 0.012f, loopY * audio * radius * 0.012f)
-        val radius = max(width, height) * 0.58f
         val blend = lerp(colorPrimary, colorSecondary, 0.45f)
         val rayCore = lerp(colorPrimary, Color.White, 0.45f)
         val path = Path()
