@@ -50,6 +50,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
@@ -281,9 +282,9 @@ private fun cleanMoodName(raw: String): String {
         .trim()
 }
 
-/** Fork: the page background is the cover colour sunk almost to black, so white text never washes out. */
+/** Fork: the page background is the cover colour sunk halfway, so white text never washes out. */
 private fun darkenForText(color: Color): Color =
-    Color(color.red * 0.16f, color.green * 0.16f, color.blue * 0.16f, 1f)
+    Color(color.red * 0.5f, color.green * 0.5f, color.blue * 0.5f, 1f)
 
 /**
  * Fork: the RGB opposite of the page background, for the progress pill that used to disappear
@@ -886,7 +887,16 @@ fun MyMixScreen(
                                 } else {
                                     selectedMix?.title ?: stringResource(Res.string.my_mix_subtitle)
                                 },
-                                style = typo().titleLarge.copy(fontSize = 32.sp, fontWeight = FontWeight.Bold),
+                                // Fork: the title sits on the bright field itself, so it carries its own
+                                // soft shadow instead of a fullscreen darkening behind it.
+                                style = typo().titleLarge.copy(
+                                    fontSize = 32.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    shadow = Shadow(
+                                        color = Color.Black.copy(alpha = 0.65f),
+                                        blurRadius = 14f,
+                                    ),
+                                ),
                                 color = Color.White,
                                 textAlign = TextAlign.Center,
                                 maxLines = 3,
@@ -1267,7 +1277,14 @@ private fun MyMixNowPlaying(
         )
         Text(
             text = song.title,
-            style = typo().titleLarge.copy(fontSize = 26.sp, fontWeight = FontWeight.Bold),
+            style = typo().titleLarge.copy(
+                fontSize = 26.sp,
+                fontWeight = FontWeight.Bold,
+                shadow = Shadow(
+                    color = Color.Black.copy(alpha = 0.65f),
+                    blurRadius = 12f,
+                ),
+            ),
             color = Color.White,
             textAlign = TextAlign.Center,
             maxLines = 2,
@@ -1278,7 +1295,12 @@ private fun MyMixNowPlaying(
         )
         Text(
             text = song.artistName?.connectArtists().orEmpty(),
-            style = typo().bodyMedium,
+            style = typo().bodyMedium.copy(
+                shadow = Shadow(
+                    color = Color.Black.copy(alpha = 0.6f),
+                    blurRadius = 10f,
+                ),
+            ),
             color = Color.White.copy(alpha = 0.82f),
             textAlign = TextAlign.Center,
             maxLines = 1,

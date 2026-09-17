@@ -104,6 +104,22 @@ fun MyMixWave(
         }
 
         val bodyRadius = radius * 0.80f
+        // Fork: the veil covers the whole canvas so no edge is ever bare — the corners carry the
+        // field's own colour instead of the page tone.
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    blend.copy(alpha = 0.35f * level),
+                    colorSecondary.copy(alpha = 0.22f * level),
+                    Color.Transparent,
+                ),
+                center = center,
+                radius = max(width, height) * 0.95f,
+            ),
+            radius = max(width, height) * 0.95f,
+            center = center,
+            blendMode = BlendMode.Plus,
+        )
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
@@ -164,9 +180,9 @@ fun MyMixWave(
                     Color.Transparent,
                 ),
                 center = center,
-                radius = radius * 1.1f,
+                radius = radius * 1.6f,
             ),
-            radius = radius * 1.1f,
+            radius = radius * 1.6f,
             center = center,
             blendMode = BlendMode.Plus,
         )

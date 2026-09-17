@@ -104,14 +104,15 @@ half4 main(vec2 fragCoord) {
     rays *= 0.60 + 2.20 * audio;
 
     float veil = pow(max(veilNoise, 0.0), 2.0) * exp(-radius * 0.70) * (0.50 + 0.50 * energy);
-    float light = clamp(body * 0.90 + rays * 0.90 + veil * 0.30, 0.0, 1.0);
-    float vignette = 1.0 - smoothstep(0.18, 1.15, radius);
+    float light = clamp(body * 0.90 + rays * 0.90 + veil * 0.45, 0.0, 1.0);
+    float vignette = 1.0 - smoothstep(0.30, 1.60, radius);
 
     vec3 rayColour = mix(uColor1.rgb, vec3(1.0), 0.45);
-    vec3 colour = mix(uColor2.rgb * 0.80, uColor1.rgb, light);
+    vec3 colour = mix(uColor2.rgb * 0.90, uColor1.rgb, light);
     colour += rayColour * rays * 0.55;
-    colour = mix(colour, uColor2.rgb * 0.45, (1.0 - vignette) * 0.90);
-    float alpha = clamp(light * 0.90 + veil * 0.20, 0.0, 1.0);
+    colour += uColor1.rgb * veil * 0.25;
+    colour = mix(colour, uColor2.rgb * 0.75, (1.0 - vignette) * 0.45);
+    float alpha = clamp(light * 0.92 + veil * 0.25, 0.0, 1.0);
     return half4(half(colour.x), half(colour.y), half(colour.z), half(alpha));
 }
 """
