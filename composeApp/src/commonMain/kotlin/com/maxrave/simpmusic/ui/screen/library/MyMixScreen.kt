@@ -62,7 +62,7 @@ import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
 import coil3.request.ImageRequest
-import com.kmpalette.Palette
+import com.kmpalette.palette.graphics.Palette
 import com.kmpalette.rememberPaletteState
 import com.maxrave.common.Config
 import com.maxrave.domain.data.model.browse.album.Track
