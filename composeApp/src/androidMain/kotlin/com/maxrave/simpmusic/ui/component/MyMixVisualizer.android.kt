@@ -91,7 +91,7 @@ half4 main(vec2 fragCoord) {
         snoise(uv * 0.8 + loopTime * 0.5, loopTime),
         snoise(uv * 0.8 - loopTime * 0.5, loopTime)
     );
-    uv += shakeVec * audio * 0.035;
+    uv += shakeVec * audio * 0.085;
 
     float radius = length(uv);
     float polarAngle = atan(uv.y, uv.x);
@@ -102,7 +102,7 @@ half4 main(vec2 fragCoord) {
     float veilNoise = snoise(uv * 4.6 - loopTime.yx * 1.2, loopTime);
     float edgeNoise = snoise(vec2(radius * 3.2, polarAngle * 2.6) + loopTime * 1.1, loopTime);
 
-    float bodyRadius = 0.68 + bodyNoise * 0.16;
+    float bodyRadius = 0.68 + bodyNoise * 0.16 + audio * 0.10;
     float body = 1.0 - smoothstep(bodyRadius - 0.30, bodyRadius, radius);
     body = pow(body, 1.9);
 
@@ -110,15 +110,23 @@ half4 main(vec2 fragCoord) {
     rayBand = pow(rayBand, 6.0);
     float rayDistance = exp(-radius * 1.35);
     float rays = rayBand * rayDistance * (0.60 + 0.50 * edgeNoise) * energy;
-    rays *= 0.70 + 1.20 * audio;
+    rays *= 0.50 + 2.60 * audio;
+    // Fork: the COUNT of rays follows the loudness — each angular sector gets its own gate, so
+    // separate rays smoothly fade in and out as the level moves instead of blinking at once.
+    float raySector = floor((polarAngle / 6.28318530718 + 0.5) * 7.0);
+    float rayGate = fract(sin(raySector * 12.9898) * 43758.5453) * 0.75;
+    rays *= smoothstep(rayGate, rayGate + 0.25, audio * 1.2);
 
     float veil = pow(max(veilNoise, 0.0), 2.0) * exp(-radius * 0.70) * (0.50 + 0.50 * energy);
     float light = clamp(body * 0.90 + rays * 0.90 + veil * 0.45, 0.0, 1.0);
     float vignette = 1.0 - smoothstep(0.30, 1.60, radius);
 
     vec3 rayColour = mix(uColor1.rgb, vec3(1.0), 0.45);
+    // Fork: on hard bass the light goes near-white but keeps the cover's tint — never pure white.
+    vec3 hotColour = mix(vec3(1.0), uColor1.rgb, 0.25);
     vec3 colour = mix(uColor2.rgb * 0.90, uColor1.rgb, light);
     colour += rayColour * rays * 0.55;
+    colour += hotColour * rays * audio * audio * 0.90;
     colour += uColor1.rgb * veil * 0.25;
     // Fork: sound-driven particles — a drifting hash sparkle field whose twinkle loop is a multiple
     // of the 180-second cycle, so it stays seamless, and whose brightness follows the level.
@@ -135,6 +143,7 @@ half4 main(vec2 fragCoord) {
     float sparkle = smoothstep(0.10, 0.0, sparkleDist) * step(0.82, cellHash) * twinkle;
     sparkle *= (0.25 + 0.75 * audio) * exp(-radius * 0.9);
     colour += rayColour * sparkle * 0.6;
+    colour += hotColour * sparkle * audio * audio * 1.4;
     colour = mix(colour, uColor2.rgb * 0.75, (1.0 - vignette) * 0.45);
     float alpha = clamp(light * 0.92 + veil * 0.25, 0.0, 1.0);
     return half4(half(colour.x), half(colour.y), half(colour.z), half(alpha));

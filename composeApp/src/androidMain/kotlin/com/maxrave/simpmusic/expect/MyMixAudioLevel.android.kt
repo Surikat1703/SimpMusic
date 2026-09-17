@@ -60,7 +60,10 @@ actual fun rememberMyMixAudioLevel(isActive: Boolean, sessionId: Int): State<Flo
                 val now = System.currentTimeMillis()
                 if (now - lastPublish >= 100L) {
                     lastPublish = now
-                    level.value = (0.25f * smoothedRms + 0.75f * smoothedBass).coerceIn(0f, 1f)
+                    // Fork: a square-root curve with real gain — raw RMS/bass numbers sit around
+                    // 0.1–0.3 and would barely move the light; rooted they land mid-scale, so bass
+                    // hits read as unmistakable flares instead of a tremor.
+                    level.value = sqrt((0.25f * smoothedRms + 0.75f * smoothedBass).coerceIn(0f, 1f))
                 }
             }
             visualizer =

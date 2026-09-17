@@ -337,9 +337,23 @@ fun MyMixScreen(
 
     // Fork: this tab is now the only way into the mixes, so it has to start the fetch the original
     // grid used to trigger itself — without this the screen sits on "Loading" forever.
-    LaunchedEffect(Unit) {
-        if (viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
-            viewModel.getYouTubeMixedForYou()
+    //
+    // Fork: self-healing online detection on top. The connectivity callback can miss a radio
+    // wake-up while this tab stays composed, which used to freeze the page offline until another
+    // tab was opened. So while the shelf is empty (and the manual switch is off) the tab retries
+    // the fetch itself every 15 seconds — the first success latches and the page leaves offline
+    // mode on its own, no matter what the callback said.
+    var probeSucceeded by remember { mutableStateOf(false) }
+    LaunchedEffect(manualOffline) {
+        if (manualOffline) return@LaunchedEffect
+        while (true) {
+            if (viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
+                runCatching { viewModel.getYouTubeMixedForYou() }
+            } else {
+                probeSucceeded = true
+                return@LaunchedEffect
+            }
+            delay(15_000)
         }
     }
 
@@ -522,16 +536,7 @@ fun MyMixScreen(
         manualOffline =
             dataStoreManager.getString(MyMixPrefs.OFFLINE_MODE).first() == DataStoreManager.TRUE
     }
-    val offline = !isOnline || manualOffline
-
-    // Fork: the shelf is fetched once, at first composition. A tab opened while the network was down
-    // therefore kept an empty grid for the rest of the session — the connectivity change was heard,
-    // the fetch was not. Every reconnect retries while there is still nothing to show.
-    LaunchedEffect(isOnline) {
-        if (isOnline && viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
-            viewModel.getYouTubeMixedForYou()
-        }
-    }
+    val offline = (!isOnline && !probeSucceeded) || manualOffline
 
     // Fork: the loudness tap lives and dies with this tab. The state is deliberately kept
     // without `by` and read only inside the visualizer's draw pass, so the ~10 Hz audio callbacks

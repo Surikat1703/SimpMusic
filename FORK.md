@@ -65,5 +65,7 @@ git merge upstream/dev
 ```
 
 `origin` is this fork; `upstream` is `maxrave-dev/SimpMusic`. All fork changes are confined to
-`composeApp/` and `androidApp/` — the `core` submodule is untouched on purpose, so an upstream merge is
-a single-repository operation.
+`composeApp/` and `androidApp/` — except `core/`, which is no longer upstream's submodule but this
+fork's own (`Surikat1703/core`, branched for the download-state write guard that fixes GUI lag while
+downloading). Merging upstream therefore means merging `maxrave-dev/core` into `Surikat1703/core`
+first, then updating the pin here.
