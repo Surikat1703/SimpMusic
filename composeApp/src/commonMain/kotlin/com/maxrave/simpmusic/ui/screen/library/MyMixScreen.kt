@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -778,8 +777,9 @@ fun MyMixScreen(
         ) {
             item(key = "my_mix_hero") {
                 // Fork: the field is pinned under the hero and scrolls WITH the list — it is a
-                // matchParentSize layer behind the cover block, not a fixed screen background. Once
-                // the hero scrolls off, the item leaves composition and the field costs nothing.
+                // matchParentSize layer behind the cover block (a BoxScope member, so no import),
+                // not a fixed screen background. Once the hero scrolls off, the item leaves
+                // composition and the field costs nothing.
                 Box(modifier = Modifier.fillMaxWidth()) {
                     MyMixVisualizer(
                         colorPrimary = fieldColor,
@@ -1027,7 +1027,6 @@ fun MyMixScreen(
                         }
 
                 }
-            }
 
             // Fork: the start button lives inside the hero now (under the cover it would start), so
             // there is exactly one play control on the page at any moment — either the player's own
