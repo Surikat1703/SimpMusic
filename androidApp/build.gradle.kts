@@ -77,8 +77,13 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // Fork: R8 and resource shrinking are off. They were the single largest cost of the CI
+            // build (`:androidApp:minifyReleaseWithR8` alone was 227 s of ~500 s), and this is a
+            // personal build published to our own Releases, so the trade is deliberate: the APK grows
+            // (roughly 26 MB -> 50 MB) in exchange for a build that finishes in about a third of the
+            // time. `proguardFiles` is kept so the rules stay in the tree, unused while this is false.
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
