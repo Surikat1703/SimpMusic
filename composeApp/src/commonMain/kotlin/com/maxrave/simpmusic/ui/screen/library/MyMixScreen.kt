@@ -745,11 +745,27 @@ fun MyMixScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // Fork: the page itself is flat — the animated field lives inside the hero item below
-            // and scrolls with the list, pinned under the cover instead of the screen. Pausing fades
-            // the field out and reveals this tone, so it is the darkened cover colour, never bright.
+            // Fork: the flat cover tone sits behind the field, so pausing — which fades the field
+            // out — reveals the cover itself instead of a black page. It meets the field's own
+            // darkened edge tone, so there is no seam between them.
             .background(pageBackground),
     ) {
+        // Fork: the field is FIXED and covers the whole tab — it is not bound to the hero block,
+        // so there is no rectangle and no flat fill around it. The list scrolls over it and the
+        // blob stays fullscreen behind the cover wherever it is.
+        MyMixVisualizer(
+            colorPrimary = fieldColor,
+            colorSecondary = waveSecondary,
+            modifier = Modifier.fillMaxSize(),
+            // The field answers to the transport, not to this tab's own player.
+            isPlaying = isPlayingNow,
+            // Fork: recycling the GPU and the frame clock is the caller's job — the visualizer cannot
+            // know whether the app is in the background. It stops the sweep and its frames when this
+            // is false, and picks the clock up from where it stopped when it comes back.
+            isVisible = isScreenVisible,
+            audioLevel = { audioLevel.value },
+        )
+
         // Only the bottom of the page is scrimmed, and only so the pills and the cache card stay
         // legible over the field. The field itself is never painted flat.
         Box(
@@ -777,24 +793,6 @@ fun MyMixScreen(
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             item(key = "my_mix_hero") {
-                // Fork: the field is pinned under the hero and scrolls WITH the list — it is a
-                // matchParentSize layer behind the cover block (a BoxScope member, so no import),
-                // not a fixed screen background. Once the hero scrolls off, the item leaves
-                // composition and the field costs nothing.
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    MyMixVisualizer(
-                        colorPrimary = fieldColor,
-                        colorSecondary = waveSecondary,
-                        modifier = Modifier.matchParentSize(),
-                        // The field answers to the transport, not to this tab's own player.
-                        isPlaying = isPlayingNow,
-                        // Fork: recycling the GPU and the frame clock is the caller's job — the
-                        // visualizer cannot know whether the app is in the background. It stops the
-                        // sweep and its frames when this is false, and picks the clock up from where
-                        // it stopped when it comes back.
-                        isVisible = isScreenVisible,
-                        audioLevel = { audioLevel.value },
-                    )
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -945,7 +943,6 @@ fun MyMixScreen(
                         }
                     }
 
-                    }
                 }
             }
 
