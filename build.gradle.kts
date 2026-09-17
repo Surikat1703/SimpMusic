@@ -43,6 +43,14 @@ subprojects {
         }
     }
 
+    // Fork: release lint is not a compile gate here — it only produces a report nobody reads, and it
+    // costs ~170 s of the ~500 s CI build (`lintVitalAnalyze*` across every Android/KMP module plus
+    // `lintVitalRelease`). Disabling the tasks by name avoids touching each module's own script, and
+    // covers the KMP modules whose `android` extension is not a plain LibraryExtension.
+    tasks.matching { it.name.startsWith("lintVital") }.configureEach {
+        enabled = false
+    }
+
     // PipePipe and Brave both depend on com.github.TeamNewPipe:nanojson with different commit
     // hashes. Gradle's default resolver picks PipePipe's older 1d9e1aea... commit which lacks
     // JsonArray.streamAsJsonObjects(), causing NoSuchMethodError when Brave's fallback runs at
