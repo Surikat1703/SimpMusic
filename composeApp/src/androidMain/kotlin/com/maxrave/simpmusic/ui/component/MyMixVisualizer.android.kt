@@ -19,6 +19,7 @@ uniform float2 uResolution;
 uniform float uTime;
 uniform float4 uColor1;
 uniform float4 uColor2;
+uniform float uAudio;
 
 vec3 mod289(vec3 x) {
     return x - floor(x * (1.0 / 289.0)) * 289.0;
@@ -84,27 +85,33 @@ half4 main(vec2 fragCoord) {
     float polarAngle = atan(uv.y, uv.x);
     vec2 direction = vec2(cos(polarAngle), sin(polarAngle));
 
-    float bodyNoise = snoise(uv * 1.35, loopTime);
-    float rayNoise = snoise(direction * 2.2 + loopTime * 0.65, loopTime);
-    float veilNoise = snoise(uv * 2.8 - loopTime.yx, loopTime);
-    float edgeNoise = snoise(vec2(radius * 2.0, polarAngle * 1.6) + loopTime, loopTime);
+    float bodyNoise = snoise(uv * 2.1 + loopTime * 0.9, loopTime);
+    float rayNoise = snoise(direction * 3.4 + loopTime * 1.4, loopTime);
+    float veilNoise = snoise(uv * 4.6 - loopTime.yx * 1.2, loopTime);
+    float edgeNoise = snoise(vec2(radius * 3.2, polarAngle * 2.6) + loopTime * 1.1, loopTime);
 
-    float bodyRadius = 0.62 + bodyNoise * 0.13;
+    float audio = clamp(uAudio, 0.0, 1.0);
+    float energy = 0.35 + 0.65 * audio;
+
+    float bodyRadius = 0.60 + bodyNoise * 0.16;
     float body = 1.0 - smoothstep(bodyRadius - 0.38, bodyRadius, radius);
     body = pow(body, 1.9);
 
     float rayBand = 0.5 + 0.5 * rayNoise;
-    rayBand = pow(rayBand, 4.0);
-    float rayDistance = exp(-radius * 1.55);
-    float rays = rayBand * rayDistance * (0.55 + 0.45 * edgeNoise);
+    rayBand = pow(rayBand, 3.0);
+    float rayDistance = exp(-radius * 1.35);
+    float rays = rayBand * rayDistance * (0.60 + 0.50 * edgeNoise) * energy;
+    rays *= 0.80 + 0.50 * audio;
 
-    float veil = pow(max(veilNoise, 0.0), 2.0) * exp(-radius * 0.72);
-    float light = clamp(body * 0.95 + rays * 0.58 + veil * 0.20, 0.0, 1.0);
-    float vignette = 1.0 - smoothstep(0.22, 1.28, radius);
+    float veil = pow(max(veilNoise, 0.0), 2.0) * exp(-radius * 0.70) * (0.50 + 0.50 * energy);
+    float light = clamp(body * 0.90 + rays * 0.85 + veil * 0.30, 0.0, 1.0);
+    float vignette = 1.0 - smoothstep(0.18, 1.15, radius);
 
-    vec3 colour = mix(uColor2.rgb, uColor1.rgb, light);
-    colour = mix(colour, uColor2.rgb, (1.0 - vignette) * 0.78);
-    float alpha = clamp(light * 0.82 + veil * 0.18, 0.0, 1.0);
+    vec3 rayColour = mix(uColor1.rgb, vec3(1.0), 0.38);
+    vec3 colour = mix(uColor2.rgb * 0.80, uColor1.rgb, light);
+    colour += rayColour * rays * 0.50;
+    colour = mix(colour, uColor2.rgb, (1.0 - vignette) * 0.85);
+    float alpha = clamp(light * 0.90 + veil * 0.20, 0.0, 1.0);
     return half4(half(colour.x), half(colour.y), half(colour.z), half(alpha));
 }
 """
@@ -117,6 +124,7 @@ actual fun MyMixVisualizer(
     modifier: Modifier,
     isPlaying: Boolean,
     isVisible: Boolean,
+    audioLevel: () -> Float,
 ) {
     val clock = rememberMyMixClock(isPlaying = isPlaying, isVisible = isVisible)
     val level by animateFloatAsState(
@@ -135,6 +143,7 @@ actual fun MyMixVisualizer(
             val paint = remember { android.graphics.Paint() }
             Canvas(modifier = modifier) {
                 shader.setFloatUniform("uTime", clock.value)
+                shader.setFloatUniform("uAudio", audioLevel().coerceIn(0f, 1f))
                 shader.setFloatUniform("uResolution", floatArrayOf(size.width, size.height))
                 shader.setFloatUniform(
                     "uColor1",
@@ -169,5 +178,6 @@ actual fun MyMixVisualizer(
         modifier = modifier,
         isPlaying = isPlaying,
         isVisible = isVisible,
+        audioLevel = audioLevel,
     )
 }

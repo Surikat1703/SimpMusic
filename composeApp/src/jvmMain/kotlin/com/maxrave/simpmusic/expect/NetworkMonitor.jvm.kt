@@ -12,4 +12,4 @@ import androidx.compose.runtime.remember
  * screen's own manual flag.
  */
 @Composable
-actual fun rememberIsOnline(): State<Boolean> = remember { mutableStateOf(true) }
+actual fun rememberIsOnline(epoch: Long): State<Boolean> = remember { mutableStateOf(true) }

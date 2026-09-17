@@ -50,7 +50,10 @@ internal fun rememberMyMixClock(isPlaying: Boolean, isVisible: Boolean): State<F
 
 /**
  * Canvas fallback for the My Mix field: one soft centre glow and volumetric rays on the same
- * seamless 180-second loop as the AGSL renderer. No analyser input of any kind.
+ * seamless 180-second loop as the AGSL renderer.
+ *
+ * The shape and speed are hardcoded. [audioLevel] only scales ray/contour brightness and length,
+ * so the sound breathes through the light without changing the animation.
  */
 @Composable
 fun MyMixWave(
@@ -59,6 +62,7 @@ fun MyMixWave(
     modifier: Modifier = Modifier,
     isPlaying: Boolean = true,
     isVisible: Boolean = true,
+    audioLevel: () -> Float = { 0f },
 ) {
     val clock = rememberMyMixClock(isPlaying = isPlaying, isVisible = isVisible)
     val level by animateFloatAsState(
@@ -66,6 +70,7 @@ fun MyMixWave(
         animationSpec = tween(600, easing = FastOutSlowInEasing),
         label = "myMixLevel",
     )
+    val rayAngles = remember { FloatArray(RAY_COUNT) { (it.toFloat() / RAY_COUNT) * TAU } }
 
     if (!isVisible || level <= 0.002f) {
         return
@@ -82,17 +87,20 @@ fun MyMixWave(
         val angle = (time / MY_MIX_CYCLE_SECONDS) * TAU
         val loopX = cos(angle) * LOOP_RADIUS
         val loopY = sin(angle) * LOOP_RADIUS
+        val audio = audioLevel().coerceIn(0f, 1f)
+        val energy = 0.35f + 0.65f * audio
         val center = Offset(width / 2f, height * 0.36f)
         val radius = max(width, height) * 0.58f
         val blend = lerp(colorPrimary, colorSecondary, 0.45f)
+        val rayCore = lerp(colorPrimary, Color.White, 0.35f)
         val path = Path()
 
         fun field(theta: Float, radial: Float): Float {
             val x = cos(theta) * radial
             val y = sin(theta) * radial
-            return 0.55f * sin(2f * theta + x * 2.1f + loopX) +
-                0.30f * sin(5f * theta - y * 3.4f + loopY) +
-                0.15f * sin(8f * theta + (x + y) * 5.0f - loopX)
+            return 0.55f * sin(3f * theta + x * 3.2f + loopX * 1.4f) +
+                0.30f * sin(7f * theta - y * 5.1f + loopY * 1.6f) +
+                0.15f * sin(11f * theta + (x + y) * 8.0f - loopX * 1.1f)
         }
 
         val bodyRadius = radius * 0.62f
@@ -113,15 +121,15 @@ fun MyMixWave(
         )
 
         repeat(RAY_COUNT) { index ->
-            val baseTheta = (index.toFloat() / RAY_COUNT) * TAU
-            val sway = field(baseTheta, 0.55f) * 0.16f
-            val theta = baseTheta + sway + loopX * 0.035f
-            val halfWidth = (0.055f + 0.035f * (0.5f + 0.5f * field(theta, 0.85f))) * radius
+            val baseTheta = rayAngles[index]
+            val sway = field(baseTheta, 0.55f) * 0.22f
+            val theta = baseTheta + sway + loopX * 0.05f
+            val halfWidth = (0.055f + 0.045f * (0.5f + 0.5f * field(theta, 0.85f))) * radius
             val inner = radius * (0.28f + 0.05f * field(theta, 0.30f))
-            val outer = radius * (1.18f + 0.08f * field(theta, 1.0f))
+            val outer = radius * (1.18f + 0.10f * field(theta, 1.0f)) * (0.85f + 0.35f * audio)
             val direction = Offset(cos(theta), sin(theta))
             val normal = Offset(-direction.y, direction.x)
-            val alpha = (0.10f + 0.10f * (0.5f + 0.5f * field(theta + 0.35f, 0.7f))) * level
+            val alpha = (0.16f + 0.16f * (0.5f + 0.5f * field(theta + 0.35f, 0.7f))) * energy * level
 
             path.reset()
             path.moveTo(center.x + direction.x * inner, center.y + direction.y * inner)
@@ -138,7 +146,7 @@ fun MyMixWave(
                 path = path,
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        colorPrimary.copy(alpha = alpha),
+                        rayCore.copy(alpha = alpha),
                         colorSecondary.copy(alpha = alpha * 0.35f),
                         Color.Transparent,
                     ),
@@ -152,7 +160,7 @@ fun MyMixWave(
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(
-                    colorPrimary.copy(alpha = 0.30f * level),
+                    rayCore.copy(alpha = 0.30f * energy * level),
                     Color.Transparent,
                 ),
                 center = center,

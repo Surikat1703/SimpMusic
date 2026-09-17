@@ -119,6 +119,21 @@ class LibraryViewModel(
     private val _accountThumbnail: MutableStateFlow<String?> = MutableStateFlow(null)
     val accountThumbnail: StateFlow<String?> get() = _accountThumbnail.asStateFlow()
 
+    /**
+     * Fork: the last resolved My Mix field colours as ARGB longs.
+     *
+     * The Mix tab is a NavHost destination, so leaving it disposes its composition and every
+     * `remember` in it — re-entering used to flash the stock theme colour until the palettes
+     * regenerated. Holding the last pair here lets the field reopen on the playing track's own
+     * colours instead of the stock ones.
+     */
+    private val _myMixFieldColors: MutableStateFlow<Pair<Long, Long>?> = MutableStateFlow(null)
+    val myMixFieldColors: StateFlow<Pair<Long, Long>?> get() = _myMixFieldColors.asStateFlow()
+
+    fun setMyMixFieldColors(primaryArgb: Long, secondaryArgb: Long) {
+        _myMixFieldColors.value = primaryArgb to secondaryArgb
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val youtubeLoggedIn = dataStoreManager.loggedIn.mapLatest { it == DataStoreManager.TRUE }
 

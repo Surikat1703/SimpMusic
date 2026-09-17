@@ -10,14 +10,15 @@ import androidx.compose.ui.graphics.Color
  * Android 13+ receives an AGSL renderer with a soft centre glow and volumetric rays. Older Android
  * versions and Desktop use [MyMixWave], which draws the same looping composition on Canvas.
  *
- * The picture is deliberately independent of BPM, volume and decibels. It follows a seamless
- * 180-second cycle, while [isPlaying] only controls a 600 ms fade and [isVisible] stops the clock
- * when the tab is not on screen.
+ * The picture is time-driven and hardcoded: a seamless 180-second cycle whose shape and speed
+ * never change. [audioLevel] only scales ray/contour brightness and length, so the sound can make
+ * the light breathe without ever changing the animation or costing the device anything extra.
  *
  * @param colorPrimary the cover accent used by the glow and rays.
  * @param colorSecondary the darker colour revealed while the field fades out.
  * @param isPlaying fades the field in and out without snapping.
  * @param isVisible stops all frame work while the My Mix tab is in the background.
+ * @param audioLevel smoothed loudness 0..1 read inside the draw pass, never in composition.
  */
 @Composable
 expect fun MyMixVisualizer(
@@ -26,4 +27,5 @@ expect fun MyMixVisualizer(
     modifier: Modifier = Modifier,
     isPlaying: Boolean = true,
     isVisible: Boolean = true,
+    audioLevel: () -> Float = { 0f },
 )

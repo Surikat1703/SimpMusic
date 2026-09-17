@@ -29,9 +29,9 @@ import kotlinx.coroutines.launch
  * tab offline until it was reopened.
  */
 @Composable
-actual fun rememberIsOnline(): State<Boolean> {
+actual fun rememberIsOnline(epoch: Long): State<Boolean> {
     val context = LocalContext.current
-    val flow = remember(context) { connectivityFlow(context) }
+    val flow = remember(context, epoch) { connectivityFlow(context) }
     return flow.collectAsState(initial = currentOnline(context))
 }
 

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -51,6 +52,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -80,6 +82,7 @@ import com.maxrave.domain.repository.PlaylistRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.simpmusic.expect.rememberIsOnline
+import com.maxrave.simpmusic.expect.rememberMyMixAudioLevel
 import com.maxrave.simpmusic.expect.ui.toImageBitmap
 import com.maxrave.simpmusic.extension.getStringBlocking
 import com.maxrave.simpmusic.ui.component.MyMixVisualizer
@@ -279,6 +282,19 @@ private fun cleanMoodName(raw: String): String {
         .trim()
 }
 
+/** Fork: the page background is the cover colour darkened so white text never washes out. */
+private fun darkenForText(color: Color): Color =
+    Color(color.red * 0.45f, color.green * 0.45f, color.blue * 0.45f, 1f)
+
+/**
+ * Fork: the RGB opposite of the page background, for the progress pill that used to disappear
+ * into the field. Falls back to white when the opposite itself would be unreadable.
+ */
+private fun oppositeForText(color: Color): Color {
+    val opposite = Color(1f - color.red, 1f - color.green, 1f - color.blue, 1f)
+    return if (opposite.luminance() < 0.35f) Color.White else opposite
+}
+
 /**
  * The "My Mix" tab — a Yandex-Music-shaped home for the YouTube Music mixes, replacing the plain
  * grid that used to own this tab ([MixForYouOriginalScreen] still exists and is reachable from the
@@ -312,6 +328,13 @@ fun MyMixScreen(
     val allMixes = mixResource.data.orEmpty()
     val isLoadingMixes = mixResource.data == null && mixResource.message == null
 
+    // Fork: a shelf refetch momentarily empties the list (Loading carries no data), and that blank
+    // used to reset the whole page — title, colours, field — to the stock look mid-session. The last
+    // non-empty shelf is held and shown through the gap instead.
+    var lastMixes by remember { mutableStateOf(allMixes) }
+    if (allMixes.isNotEmpty()) lastMixes = allMixes
+    val effectiveMixes = if (allMixes.isNotEmpty()) allMixes else lastMixes
+
     // Fork: this tab is now the only way into the mixes, so it has to start the fetch the original
     // grid used to trigger itself — without this the screen sits on "Loading" forever.
     LaunchedEffect(Unit) {
@@ -320,13 +343,13 @@ fun MyMixScreen(
         }
     }
 
-    val defaultMix = remember(allMixes) {
-        allMixes.firstOrNull { it.browseId.startsWith("RDTM") && it.title.contains("super", true) }
-            ?: allMixes.firstOrNull { it.browseId.startsWith("RDTM") }
-            ?: allMixes.firstOrNull()
+    val defaultMix = remember(effectiveMixes) {
+        effectiveMixes.firstOrNull { it.browseId.startsWith("RDTM") && it.title.contains("super", true) }
+            ?: effectiveMixes.firstOrNull { it.browseId.startsWith("RDTM") }
+            ?: effectiveMixes.firstOrNull()
     }
-    val nameFiltered = remember(allMixes) {
-        allMixes.filter { it.title.contains("mix", true) || it.title.contains("микс", true) }
+    val nameFiltered = remember(effectiveMixes) {
+        effectiveMixes.filter { it.title.contains("mix", true) || it.title.contains("микс", true) }
     }
     // Fork: YouTube ships the shelf as numbered duplicates ("Mix 1", "Mix 2", "Микс 3") and repeats
     // the word "микс" in every title, so a row of eight identical-looking pills is really three
@@ -335,14 +358,14 @@ fun MyMixScreen(
     // which is why the filter below used to drop it entirely. It is pulled out here instead, excluded
     // from the mood list by id and shown first, so it can be emphasised without its title polluting
     // every other entry.
-    val superMix = remember(allMixes, defaultMix) {
-        allMixes.firstOrNull { mix ->
+    val superMix = remember(effectiveMixes, defaultMix) {
+        effectiveMixes.firstOrNull { mix ->
             val title = mix.title.lowercase()
             "супер" in title || "super" in title
         } ?: defaultMix
     }
-    val moodMixes = remember(allMixes, nameFiltered, superMix) {
-        val source = nameFiltered.ifEmpty { allMixes }
+    val moodMixes = remember(effectiveMixes, nameFiltered, superMix) {
+        val source = nameFiltered.ifEmpty { effectiveMixes }
         val seen = mutableSetOf<String>()
         source.filter { mix ->
             val name = cleanMoodName(mix.title)
@@ -354,7 +377,7 @@ fun MyMixScreen(
     LaunchedEffect(Unit) {
         selectedMoodId = dataStoreManager.getString(MyMixPrefs.MOOD_ID).first()?.takeIf { it.isNotBlank() }
     }
-    val selectedMix = allMixes.firstOrNull { it.browseId == selectedMoodId } ?: defaultMix
+    val selectedMix = effectiveMixes.firstOrNull { it.browseId == selectedMoodId } ?: defaultMix
 
     val listState = rememberLazyListState()
     LaunchedEffect(listState) {
@@ -374,8 +397,17 @@ fun MyMixScreen(
     val mixArtworkPalette = rememberArtworkPalette(artworkUrl)
     val playingArtworkPalette = rememberArtworkPalette(playingArtworkUrl)
 
-    val mixDominant = mixArtworkPalette?.dominantColorOrNull() ?: MaterialTheme.colorScheme.primary
-    val mixVibrant = mixArtworkPalette?.vibrantColorOrNull() ?: mixDominant
+    // Fork: the last resolved field colours, held in the ViewModel so re-entering the tab never
+    // flashes the stock look while the palettes regenerate.
+    val lastFieldColors by viewModel.myMixFieldColors.collectAsStateWithLifecycle()
+    val lastPrimary = lastFieldColors?.first?.toInt()?.let { Color(it) }
+    val lastSecondary = lastFieldColors?.second?.toInt()?.let { Color(it) }
+    // Fork: the stock field is a purple gradient, never the theme blue — it shows only until a real
+    // palette (or the last one) arrives.
+    val stockPrimary = Color(0xFF2A1040)
+    val stockSecondary = Color(0xFF7C3AED)
+    val mixDominant = mixArtworkPalette?.dominantColorOrNull() ?: lastPrimary ?: stockPrimary
+    val mixVibrant = mixArtworkPalette?.vibrantColorOrNull() ?: lastSecondary ?: stockSecondary
     val playingDominantTarget = playingArtworkPalette?.dominantColorOrNull() ?: mixDominant
     val playingVibrantTarget = playingArtworkPalette?.vibrantColorOrNull() ?: mixVibrant
 
@@ -403,9 +435,14 @@ fun MyMixScreen(
     // and a frozen field. The player itself is the only thing that always knows the truth.
     val mediaPlayerHandler: MediaPlayerHandler = koinInject()
     var liveIsPlaying by remember { mutableStateOf(false) }
+    var audioSessionId by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) {
         while (true) {
             liveIsPlaying = runCatching { mediaPlayerHandler.player.isPlaying }.getOrDefault(false)
+            // Fork: the session id only changes on track/player swaps, so the assignment below
+            // recomposes at most then — never on the 500 ms tick itself.
+            val session = runCatching { mediaPlayerHandler.player.audioSessionId }.getOrDefault(0)
+            if (session != audioSessionId) audioSessionId = session
             delay(500)
         }
     }
@@ -416,11 +453,18 @@ fun MyMixScreen(
     // clock can still tick. ON_PAUSE flips this and the field stops the clock and its frames.
     val lifecycleOwner = LocalLifecycleOwner.current
     var isScreenVisible by remember { mutableStateOf(true) }
+    var networkEpoch by remember { mutableStateOf(0L) }
     DisposableEffect(lifecycleOwner) {
         val observer =
             LifecycleEventObserver { _, event ->
                 when (event) {
-                    Lifecycle.Event.ON_RESUME -> isScreenVisible = true
+                    Lifecycle.Event.ON_RESUME -> {
+                        isScreenVisible = true
+                        // Fork: the connectivity flow can miss a radio wake-up while this tab stays
+                        // composed, which froze the page offline until another tab was opened. Bumping
+                        // the epoch restarts the observation and re-reads the current state at once.
+                        networkEpoch = Clock.System.now().toEpochMilliseconds()
+                    }
                     Lifecycle.Event.ON_PAUSE -> isScreenVisible = false
                     else -> Unit
                 }
@@ -440,12 +484,30 @@ fun MyMixScreen(
     } else {
         dominant
     }
-    // A near-white cover would paint a near-white field, so a pale colour is swapped for the app
-    // accent: the hero has to stay saturated for white text to sit on it.
+    // Fork: the page background is the cover colour DARKENED, never the raw swatch — white text
+    // sits on it in both playing and paused states, and a bright cover can never wash it out. Until
+    // any palette (or the last one) arrives, the page is a dark neutral, not the theme colour.
+    val hasAnyPalette = mixArtworkPalette != null || playingArtworkPalette != null
     val fieldColor = if (heroDominant.luminance() > 0.72f) MaterialTheme.colorScheme.primary else heroDominant
     // Fork: the second colour is the cover's own VIBRANT swatch — no rotation and no theme accent, so
     // nothing appears on the page that the artwork does not already contain.
     val waveSecondary = if (startedMixId != null) playingVibrant else mixVibrant
+    val pageBackground = if (hasAnyPalette || lastFieldColors != null) {
+        darkenForText(fieldColor)
+    } else {
+        Color(0xFF0B0714)
+    }
+    // Fork: the progress pill wears the OPPOSITE of the page background, computed — never the field
+    // colour itself, which is exactly what it used to disappear into.
+    val progressAccent = oppositeForText(pageBackground)
+
+    // Fork: persist the resolved pair while a real palette backs it, so the next entry opens on the
+    // playing track's colours instead of the stock ones.
+    LaunchedEffect(fieldColor, waveSecondary, hasAnyPalette) {
+        if (hasAnyPalette) {
+            viewModel.setMyMixFieldColors(fieldColor.toArgb().toLong(), waveSecondary.toArgb().toLong())
+        }
+    }
 
     // Fork: the field was frozen in the background because the animation only ran while the tab was
     // composed, and it read a transport flag that goes stale there.
@@ -454,7 +516,7 @@ fun MyMixScreen(
     // Fork: offline mode. Losing the network turns it on by itself; the switch beside the button that
     // opens the original Mix grid covers the case where the network is up but YouTube is unreachable
     // (a VPN in a region YouTube Music does not serve), which no connectivity callback can detect.
-    val isOnline by rememberIsOnline()
+    val isOnline by rememberIsOnline(networkEpoch)
     var manualOffline by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         manualOffline =
@@ -470,6 +532,14 @@ fun MyMixScreen(
             viewModel.getYouTubeMixedForYou()
         }
     }
+
+    // Fork: the loudness tap lives and dies with this tab. The state is deliberately kept
+    // without `by` and read only inside the visualizer's draw pass, so the ~10 Hz audio callbacks
+    // repaint the field without ever recomposing the screen.
+    val audioLevel = rememberMyMixAudioLevel(
+        isActive = isPlayingNow && isScreenVisible,
+        sessionId = audioSessionId,
+    )
 
     // Fork: the like button has to land in YOUTUBE's liked songs, not only in the app's local list. The
     // local toggle stays because the rest of the app reads that flag, but the account is what the user
@@ -548,26 +618,31 @@ fun MyMixScreen(
         }
     }
 
-    // Fork: the "Любимые треки" pill. The app's own liked songs live in the local database and need
-    // no network at all, so they always come first and this entry keeps working offline and behind a
-    // VPN. Only when there are none does it fall back to the account's Liked Music playlist — without
-    // that fallback the pill answered "sign in" to a user who was signed in all along.
+    // Fork: the "Любимые треки" pill plays the account's YouTube Liked Music playlist first —
+    // that is the list the user asked for. The local liked songs are only the fallback for when the
+    // account list comes back empty or unreachable.
     fun playLikes() {
         if (isPreparing) return
         isPreparing = true
         playFailed = false
         scope.launch {
             try {
-                var tracks = songRepository.getLikedSongs().first().toArrayListTrack()
-                if (tracks.isEmpty()) {
-                    val fetched = withTimeoutOrNull(30_000) {
+                // Fork: offline the account list is unreachable by definition, so going for it first
+                // would only burn the 30-second timeout — local likes are the whole answer there.
+                val fetched = if (!offline) {
+                    withTimeoutOrNull(30_000) {
                         playlistRepository.getPlaylistData(
                             playlistId = YT_LIKED_PLAYLIST_ID,
                             viewString = getStringBlocking(Res.string.view_count),
                         ).first()
                     }
-                    val pair = (fetched as? Resource.Success<Pair<PlaylistBrowse, String?>>)?.data
-                    tracks = ArrayList<Track>(pair?.first?.tracks.orEmpty())
+                } else {
+                    null
+                }
+                val pair = (fetched as? Resource.Success<Pair<PlaylistBrowse, String?>>)?.data
+                var tracks = ArrayList<Track>(pair?.first?.tracks.orEmpty())
+                if (tracks.isEmpty()) {
+                    tracks = songRepository.getLikedSongs().first().toArrayListTrack()
                 }
                 if (tracks.isEmpty()) {
                     playFailed = true
@@ -670,25 +745,11 @@ fun MyMixScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // Fork: the flat artwork colour sits behind the field, so pausing — which fades the field
-            // out — reveals the cover's own tone instead of a black page.
-            .background(fieldColor),
+            // Fork: the page itself is flat — the animated field lives inside the hero item below
+            // and scrolls with the list, pinned under the cover instead of the screen. Pausing fades
+            // the field out and reveals this tone, so it is the darkened cover colour, never bright.
+            .background(pageBackground),
     ) {
-        // The field is the page, not a decoration inside it: it runs under the whole screen and the
-        // list scrolls over it. On Android 13+ this is a GPU shader; older phones and Desktop get the
-        // Canvas blob field, and both are fed the same parameters.
-        MyMixVisualizer(
-            colorPrimary = fieldColor,
-            colorSecondary = waveSecondary,
-            modifier = Modifier.fillMaxSize(),
-            // The field answers to the transport, not to this tab's own player.
-            isPlaying = isPlayingNow,
-            // Fork: recycling the GPU and the frame clock is the caller's job — the visualizer cannot
-            // know whether the app is in the background. It stops the sweep and its frames when this
-            // is false, and picks the clock up from where it stopped when it comes back.
-            isVisible = isScreenVisible,
-        )
-
         // Only the bottom of the page is scrimmed, and only so the pills and the cache card stay
         // legible over the field. The field itself is never painted flat.
         Box(
@@ -716,6 +777,23 @@ fun MyMixScreen(
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             item(key = "my_mix_hero") {
+                // Fork: the field is pinned under the hero and scrolls WITH the list — it is a
+                // matchParentSize layer behind the cover block, not a fixed screen background. Once
+                // the hero scrolls off, the item leaves composition and the field costs nothing.
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    MyMixVisualizer(
+                        colorPrimary = fieldColor,
+                        colorSecondary = waveSecondary,
+                        modifier = Modifier.matchParentSize(),
+                        // The field answers to the transport, not to this tab's own player.
+                        isPlaying = isPlayingNow,
+                        // Fork: recycling the GPU and the frame clock is the caller's job — the
+                        // visualizer cannot know whether the app is in the background. It stops the
+                        // sweep and its frames when this is false, and picks the clock up from where
+                        // it stopped when it comes back.
+                        isVisible = isScreenVisible,
+                        audioLevel = { audioLevel.value },
+                    )
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -773,7 +851,7 @@ fun MyMixScreen(
                             song = nowSong,
                             isPlaying = isPlayingNow,
                             isLiked = youTubeLiked,
-                            accent = playingDominant,
+                            accent = progressAccent,
                             onOpenPlayer = onOpenNowPlaying,
                             onToggleLike = { toggleLike() },
                             onPlayPause = { sharedViewModel.onUIEvent(UIEvent.PlayPause) },
@@ -857,14 +935,15 @@ fun MyMixScreen(
                         }
                     }
 
+                    }
                 }
             }
 
             // Fork: the mood row sits outside the hero. Inside it, the player's own height squeezed the
-            // row until its pills were unreadable as soon as playback started. Offline it is hidden
-            // entirely — the moods are online shelves, so offering them with no network is a lie.
-            if (!offline) {
-                item(key = "my_mix_moods") {
+            // row until its pills were unreadable as soon as playback started. Online it shows the
+            // full shelf; offline only the two entries that work without a network — the autocached
+            // Supermix and the Liked tracks the user caches themselves.
+            item(key = "my_mix_moods") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -874,6 +953,18 @@ fun MyMixScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 contentPadding = PaddingValues(horizontal = 2.dp),
                             ) {
+                                // Fork: offline the shelf is empty, so the Supermix pill plays the
+                                // autocached mix directly instead of opening a playlist that is not there.
+                                if (offline) {
+                                    item(key = "supermix_offline") {
+                                        MoodPill(
+                                            label = stringResource(Res.string.my_mix_supermix),
+                                            selected = !isLikesSelected,
+                                            emphasized = true,
+                                            onClick = { playOffline() },
+                                        )
+                                    }
+                                }
                                 // Fork: the personal mix leads the row and is drawn differently, because
                                 // it is the one entry that follows the listener rather than a theme.
                                 superMix?.let { mix ->
@@ -906,6 +997,7 @@ fun MyMixScreen(
                                         },
                                     )
                                 }
+                                if (!offline) {
                                 items(items = moodMixes, key = { it.browseId }) { mix ->
                                     MoodPill(
                                         label = cleanMoodName(mix.title),
@@ -919,14 +1011,18 @@ fun MyMixScreen(
                                         },
                                     )
                                 }
+                                }
                             }
                             // Fork: the row only has space for a few moods; this opens the whole shelf.
+                            // Online-only, like the shelf it opens.
+                            if (!offline) {
                             IconButton(onClick = { showAllMoods = true }) {
                                 Icon(
                                     imageVector = SimpIcons.UnfoldMore,
                                     contentDescription = stringResource(Res.string.my_mix_all_moods),
                                     tint = Color.White,
                                 )
+                            }
                             }
                         }
 
