@@ -1855,6 +1855,15 @@ class SharedViewModel(
         }
     }
 
+    // Fork: the tab gates read from DataStore, whose first emission is not the stored value — it is
+    // the flow's own default. Seeding them synchronously is what keeps the default-tab setting from
+    // being pushed back to Home by the first frame of the gate-fallback effect.
+    fun isYouTubeLoggedInNow(): Boolean =
+        runBlocking { dataStoreManager.loggedIn.firstOrNull() } == DataStoreManager.TRUE
+
+    fun isLocalTrackingEnabledNow(): Boolean =
+        runBlocking { dataStoreManager.localTrackingEnabled.firstOrNull() } == DataStoreManager.TRUE
+
     fun setThemeMode(mode: String) {
         viewModelScope.launch {
             dataStoreManager.setThemeMode(mode)

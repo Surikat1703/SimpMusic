@@ -152,12 +152,20 @@ fun App(
 
     val isTranslucentBottomBar by viewModel.getTranslucentBottomBar().collectAsStateWithLifecycle(DataStoreManager.FALSE)
     val isLiquidGlassEnabled by viewModel.getEnableLiquidGlass().collectAsStateWithLifecycle(DataStoreManager.FALSE)
+    // Fork: both gates below must be TRUE from the very first frame if they are stored TRUE, because
+    // the default-tab setting can point at a gated tab and the gate-fallback effect would otherwise
+    // bounce it to Home before DataStore delivered anything. `collectAsStateWithLifecycle(default)`
+    // only seeds the very first value, so the seed is read synchronously instead.
+    val seedLocalTracking = remember { viewModel.isLocalTrackingEnabledNow() }
+    val seedLoggedIn = remember { viewModel.isYouTubeLoggedInNow() }
     // Analytics only makes sense with local tracking on, so its tab follows that setting.
-    val isLocalTrackingEnabled by viewModel.getLocalTrackingEnabled().collectAsStateWithLifecycle(DataStoreManager.FALSE)
+    val isLocalTrackingEnabled by viewModel.getLocalTrackingEnabled()
+        .collectAsStateWithLifecycle(if (seedLocalTracking) DataStoreManager.TRUE else DataStoreManager.FALSE)
     val showAnalyticsTab = isLocalTrackingEnabled == TRUE
     // Mix for you comes from the signed-in YouTube account, so its tab follows the session — the
     // same condition that used to hide the chip inside Library.
-    val isYouTubeLoggedIn by viewModel.getYouTubeLoggedIn().collectAsStateWithLifecycle(DataStoreManager.FALSE)
+    val isYouTubeLoggedIn by viewModel.getYouTubeLoggedIn()
+        .collectAsStateWithLifecycle(if (seedLoggedIn) DataStoreManager.TRUE else DataStoreManager.FALSE)
     val showMixForYouTab = isYouTubeLoggedIn == TRUE
 
     // Fork: the app can open on a tab other than Home (Settings -> User interface -> Default tab).
