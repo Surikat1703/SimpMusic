@@ -10,17 +10,23 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 /**
  * Fork: Android's own answer to "is there a network right now".
  *
  * `registerDefaultNetworkCallback` reports both the current state and every later change, which is
  * exactly what the offline mode needs — it is entered when the callback says there is no network and
- * left again the moment one comes back, with no polling and no battery cost while nothing changes.
- * A network is only counted as usable when it reports both INTERNET and VALIDATED, so a captive
- * portal (connected, but nothing reachable) still reads as offline.
+ * left again the moment one comes back. A ten-second recheck covers devices/ROMs whose callbacks or
+ * validation state lag behind an actually usable connection.
+ *
+ * A network is counted as usable when it reports INTERNET. VALIDATED is deliberately not required:
+ * some VPN setups and ROMs leave a working default network unvalidated, which previously froze this
+ * tab offline until it was reopened.
  */
 @Composable
 actual fun rememberIsOnline(): State<Boolean> {
@@ -55,6 +61,12 @@ private fun connectivityFlow(context: Context) = callbackFlow {
         }
 
     manager.registerDefaultNetworkCallback(callback)
+    launch {
+        while (isActive) {
+            delay(10_000)
+            trySend(isOnline(manager))
+        }
+    }
     awaitClose { runCatching { manager.unregisterNetworkCallback(callback) } }
 }.distinctUntilChanged()
 
@@ -66,6 +78,5 @@ private fun currentOnline(context: Context): Boolean {
 private fun isOnline(manager: ConnectivityManager): Boolean {
     val network = manager.activeNetwork ?: return false
     val capabilities = manager.getNetworkCapabilities(network) ?: return false
-    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
 }

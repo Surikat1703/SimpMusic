@@ -36,6 +36,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +57,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil3.SingletonImageLoader
@@ -76,7 +80,6 @@ import com.maxrave.domain.repository.PlaylistRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.simpmusic.expect.rememberIsOnline
-import com.maxrave.simpmusic.expect.rememberMyMixAudioLevels
 import com.maxrave.simpmusic.expect.ui.toImageBitmap
 import com.maxrave.simpmusic.extension.getStringBlocking
 import com.maxrave.simpmusic.ui.component.MyMixVisualizer
@@ -119,6 +122,7 @@ import simpmusic.composeapp.generated.resources.my_mix_open_original
 import simpmusic.composeapp.generated.resources.my_mix_play
 import simpmusic.composeapp.generated.resources.my_mix_preparing
 import simpmusic.composeapp.generated.resources.my_mix_subtitle
+import simpmusic.composeapp.generated.resources.my_mix_you_are_offline
 import simpmusic.composeapp.generated.resources.radio
 import simpmusic.composeapp.generated.resources.view_count
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -399,15 +403,30 @@ fun MyMixScreen(
     // and a frozen field. The player itself is the only thing that always knows the truth.
     val mediaPlayerHandler: MediaPlayerHandler = koinInject()
     var liveIsPlaying by remember { mutableStateOf(false) }
-    var audioSessionId by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) {
         while (true) {
             liveIsPlaying = runCatching { mediaPlayerHandler.player.isPlaying }.getOrDefault(false)
-            // Fork: the analyser attaches to the player's OWN audio session, and every ExoPlayer has
-            // its own, so the id has to be re-read on the same poll that keeps isPlaying honest.
-            audioSessionId = runCatching { mediaPlayerHandler.player.audioSessionId }.getOrDefault(0)
             delay(500)
         }
+    }
+
+    // Fork: the field must cost nothing while the screen is not in front of the user. This tab is a
+    // NavHost destination, so leaving it tears the composition down and every effect with it — what is
+    // left to cover is the app going to the background, where the window is not drawn but the frame
+    // clock can still tick. ON_PAUSE flips this and the field stops the clock and its frames.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var isScreenVisible by remember { mutableStateOf(true) }
+    DisposableEffect(lifecycleOwner) {
+        val observer =
+            LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_RESUME -> isScreenVisible = true
+                    Lifecycle.Event.ON_PAUSE -> isScreenVisible = false
+                    else -> Unit
+                }
+            }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     // The source this screen last started: it decides whether the big button toggles the transport or
@@ -443,14 +462,14 @@ fun MyMixScreen(
     }
     val offline = !isOnline || manualOffline
 
-    // Fork: real levels of the app's own playback, so the field reacts to the music itself rather than
-    // to the volume slider. An all-zero result means no analyser is attached — no permission, an older
-    // phone, Desktop — and the visualizer falls back to its synthetic beat.
-    //
-    // Note the missing `by`: this stays a State on purpose and is only ever read inside the
-    // visualizer's lambdas, because the analyser reports dozens of times a second and a value read
-    // here would recompose this whole screen — list included — on every callback.
-    val audioLevels = rememberMyMixAudioLevels(isPlaying = isPlayingNow, sessionId = audioSessionId)
+    // Fork: the shelf is fetched once, at first composition. A tab opened while the network was down
+    // therefore kept an empty grid for the rest of the session — the connectivity change was heard,
+    // the fetch was not. Every reconnect retries while there is still nothing to show.
+    LaunchedEffect(isOnline) {
+        if (isOnline && viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
+            viewModel.getYouTubeMixedForYou()
+        }
+    }
 
     // Fork: the like button has to land in YOUTUBE's liked songs, not only in the app's local list. The
     // local toggle stays because the rest of the app reads that flag, but the account is what the user
@@ -664,16 +683,10 @@ fun MyMixScreen(
             modifier = Modifier.fillMaxSize(),
             // The field answers to the transport, not to this tab's own player.
             isPlaying = isPlayingNow,
-            // Fork: loudness and bass come from the app's own audio session, and speed from the treble
-            // content. All three are read INSIDE the draw pass through lambdas — passing the numbers
-            // directly would recompose the screen on every analyser callback. They are all zero when no
-            // analyser could be attached, and the field then runs its own synthetic beat.
-            amplitude = { audioLevels.value.rms },
-            bass = { audioLevels.value.bass },
-            speed = {
-                val levels = audioLevels.value
-                if (levels.isSilent) 1f else 0.5f + 1.6f * levels.treble
-            },
+            // Fork: recycling the GPU and the frame clock is the caller's job — the visualizer cannot
+            // know whether the app is in the background. It stops the sweep and its frames when this
+            // is false, and picks the clock up from where it stopped when it comes back.
+            isVisible = isScreenVisible,
         )
 
         // Only the bottom of the page is scrimmed, and only so the pills and the cache card stay
@@ -788,7 +801,9 @@ fun MyMixScreen(
                                 contentDescription = selectedMix?.title,
                             )
                             Text(
-                                text = if (isLikesSelected) {
+                                text = if (offline) {
+                                    stringResource(Res.string.my_mix_you_are_offline)
+                                } else if (isLikesSelected) {
                                     stringResource(Res.string.my_mix_no_mood)
                                 } else {
                                     selectedMix?.title ?: stringResource(Res.string.my_mix_subtitle)
@@ -816,7 +831,7 @@ fun MyMixScreen(
                                     }
                                 },
                                 modifier = Modifier.size(84.dp),
-                                enabled = !isPreparing && (isLikesSelected || selectedMix != null),
+                                enabled = !isPreparing && (offline || isLikesSelected || selectedMix != null),
                                 colors =
                                     IconButtonDefaults.filledIconButtonColors(
                                         containerColor = Color.White,

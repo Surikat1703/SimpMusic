@@ -625,6 +625,7 @@
     <string name="my_mix_cache_now">Refresh cache now</string>
     <string name="my_mix_cached_count">Downloaded</string>
     <string name="my_mix_offline">Offline mode</string>
+    <string name="my_mix_you_are_offline">You are offline</string>
     <string name="my_mix_open_original">Open Mix for you</string>
     <string name="my_mix_empty">Nothing to play here. Add tracks to your liked songs.</string>
     <string name="my_mix_add_to_likes">Add to liked tracks</string>

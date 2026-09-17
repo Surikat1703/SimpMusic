@@ -6,11 +6,6 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
-    <!-- Fork: the "My Mix" field reads the level of the app's OWN playback stream through
-         android.media.audiofx.Visualizer. From Android 9 that class asks for the recording
-         permission even though nothing is ever recorded; denying it only costs the field its
-         real reaction, which then falls back to a synthetic beat. -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
