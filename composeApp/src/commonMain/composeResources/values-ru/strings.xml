@@ -559,6 +559,8 @@
     <string name="my_mix_cache_count">Треков в кэше</string>
     <string name="my_mix_cache_interval">Обновлять каждые (дней)</string>
     <string name="my_mix_cache_now">Обновить кэш сейчас</string>
+    <string name="my_mix_cached_count">Скачано</string>
+    <string name="my_mix_offline">Оффлайн-режим</string>
     <string name="my_mix_open_original">Открыть «Миксы для вас»</string>
     <string name="my_mix_empty">Нечего играть. Добавь треки в любимые.</string>
     <string name="my_mix_add_to_likes">Добавить в любимые треки</string>

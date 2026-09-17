@@ -58,9 +58,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
-import com.kmpalette.loader.rememberNetworkLoader
-import com.kmpalette.rememberDominantColorState
+import coil3.compose.LocalPlatformContext
+import coil3.request.ImageRequest
+import com.kmpalette.Palette
+import com.kmpalette.rememberPaletteState
 import com.maxrave.common.Config
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
@@ -72,10 +75,14 @@ import com.maxrave.domain.mediaservice.handler.QueueData
 import com.maxrave.domain.repository.PlaylistRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.isRadioPlaylistId
+import com.maxrave.simpmusic.expect.rememberIsOnline
+import com.maxrave.simpmusic.expect.rememberMyMixAudioLevels
+import com.maxrave.simpmusic.expect.ui.toImageBitmap
 import com.maxrave.simpmusic.extension.getStringBlocking
 import com.maxrave.simpmusic.ui.component.MyMixVisualizer
 import com.maxrave.simpmusic.ui.component.QueueBottomSheet
 import com.maxrave.simpmusic.ui.icon.Add
+import com.maxrave.simpmusic.ui.icon.CloudOff
 import com.maxrave.simpmusic.ui.icon.Pause
 import com.maxrave.simpmusic.ui.icon.PlayArrow
 import com.maxrave.simpmusic.ui.icon.Remove
@@ -86,10 +93,8 @@ import com.maxrave.simpmusic.ui.theme.typo
 import com.maxrave.simpmusic.viewModel.LibraryViewModel
 import com.maxrave.simpmusic.viewModel.SharedViewModel
 import com.maxrave.simpmusic.viewModel.UIEvent
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.http.Url
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -102,6 +107,8 @@ import simpmusic.composeapp.generated.resources.my_mix
 import simpmusic.composeapp.generated.resources.my_mix_all_mixes
 import simpmusic.composeapp.generated.resources.my_mix_auto_cache
 import simpmusic.composeapp.generated.resources.my_mix_auto_cache_desc
+import simpmusic.composeapp.generated.resources.my_mix_cached_count
+import simpmusic.composeapp.generated.resources.my_mix_offline
 import simpmusic.composeapp.generated.resources.my_mix_cache_count
 import simpmusic.composeapp.generated.resources.my_mix_cache_interval
 import simpmusic.composeapp.generated.resources.my_mix_cache_now
@@ -140,12 +147,12 @@ import com.maxrave.simpmusic.ui.icon.PlaylistAdd
 import com.maxrave.simpmusic.ui.icon.Close
 import com.maxrave.simpmusic.ui.icon.SkipNext
 import com.maxrave.simpmusic.ui.icon.SkipPrevious
+import com.maxrave.simpmusic.ui.icon.UnfoldLess
 import com.maxrave.simpmusic.ui.icon.UnfoldMore
 import com.maxrave.simpmusic.ui.icon.MoreVert
 import simpmusic.composeapp.generated.resources.my_mix_all_moods
 import simpmusic.composeapp.generated.resources.my_mix_add_to_likes
 import simpmusic.composeapp.generated.resources.my_mix_supermix
-import kotlin.math.abs
 import kotlin.time.Clock
 
 /**
@@ -166,6 +173,14 @@ object MyMixPrefs {
     // Fork: a unique value written here asks the cache worker to run once, right away.
     const val CACHE_REQUEST = "my_mix_cache_request"
 
+    // Fork: the videoIds of the last cache plan, comma separated. The card counts how many of them
+    // are actually on disk, which is the only honest answer to "how much of the mix is cached".
+    const val CACHED_IDS = "my_mix_cached_ids"
+
+    // Fork: the hand-set offline switch. Losing the network turns offline mode on by itself; this is
+    // for the case where the network is up but YouTube is unreachable (a VPN in a blocked region).
+    const val OFFLINE_MODE = "my_mix_offline_mode"
+
     const val DEFAULT_COUNT = 100
     const val DEFAULT_INTERVAL_DAYS = 3
 }
@@ -182,6 +197,9 @@ private const val LIKES_MOOD_ID = "liked"
  */
 private const val YT_LIKED_PLAYLIST_ID = "LM"
 
+/** Fork: the pseudo mood the offline cache is played from, so the hero knows what it started. */
+private const val OFFLINE_MODE_ID = "offline"
+
 /**
  * Fork: "Мой супермикс" -> "" and "Микс для вечеринки 2" -> "Для вечеринки".
  *
@@ -195,41 +213,49 @@ private const val YT_LIKED_PLAYLIST_ID = "LM"
  * not a mood. Callers that need a label anyway fall back to the raw title themselves.
  */
 /**
- * Fork: rotates a colour's hue by [amount] (0..1 of a full turn) while keeping its saturation and
- * value, so the second field colour is unmistakably part of the same artwork. Written out by hand
- * because this file is common code and android.graphics.Color is not available here.
+ * Fork: the artwork's palette, loaded straight from the image rather than from a composable that
+ * happens to be showing it.
+ *
+ * The page needs the cover's colours in two places at once — the selected mix and whatever is
+ * playing — and only one of them is on screen as an image, so the bitmap is fetched here through
+ * Coil and handed to kmpalette.
+ *
+ * The palette is HELD in state because kmpalette reports null until a generation has finished: its
+ * state passes through Loading, and reading `paletteState.palette` directly would paint the page
+ * black for the whole duration of every load — and leave it black forever if the load is cancelled.
  */
-private fun shiftHue(color: Color, amount: Float): Color {
-    val r = color.red
-    val g = color.green
-    val b = color.blue
-    val max = maxOf(r, g, b)
-    val min = minOf(r, g, b)
-    val delta = max - min
-    var h = when {
-        delta == 0f -> 0f
-        max == r -> ((g - b) / delta) % 6f
-        max == g -> (b - r) / delta + 2f
-        else -> (r - g) / delta + 4f
-    } * 60f
-    if (h < 0f) h += 360f
-    val s = if (max == 0f) 0f else delta / max
-    val v = max
+@Composable
+private fun rememberArtworkPalette(url: String?): Palette? {
+    val context = LocalPlatformContext.current
+    val paletteState = rememberPaletteState()
+    var palette by remember { mutableStateOf<Palette?>(null) }
 
-    val rotated = (h + amount * 360f) % 360f
-    val c = v * s
-    val x = c * (1f - abs((rotated / 60f) % 2f - 1f))
-    val m = v - c
-    val rgb = when {
-        rotated < 60f -> Triple(c, x, 0f)
-        rotated < 120f -> Triple(x, c, 0f)
-        rotated < 180f -> Triple(0f, c, x)
-        rotated < 240f -> Triple(0f, x, c)
-        rotated < 300f -> Triple(x, 0f, c)
-        else -> Triple(c, 0f, x)
+    LaunchedEffect(url) {
+        if (url.isNullOrBlank()) return@LaunchedEffect
+        val request = ImageRequest.Builder(context).data(url).size(128).build()
+        val image =
+            runCatching { SingletonImageLoader.get(context).execute(request).image }
+                .getOrNull()
+                ?: return@LaunchedEffect
+        runCatching { paletteState.generate(image.toImageBitmap()) }
     }
-    return Color(rgb.first + m, rgb.second + m, rgb.third + m, color.alpha)
+
+    LaunchedEffect(paletteState) {
+        snapshotFlow { paletteState.palette }
+            .distinctUntilChanged()
+            .collect { resolved -> if (resolved != null) palette = resolved }
+    }
+
+    return palette
 }
+
+/** The cover's dominant swatch, or null when the palette has nothing to say. */
+private fun Palette.dominantColorOrNull(): Color? =
+    getDominantColor(0).takeIf { it != 0 }?.let { Color(it) }
+
+/** The cover's vibrant swatch — the field's second colour. */
+private fun Palette.vibrantColorOrNull(): Color? =
+    getVibrantColor(0).takeIf { it != 0 }?.let { Color(it) }
 
 private fun cleanMoodName(raw: String): String {
     val deNumbered = raw.replace(Regex("""\s*[#№]?\s*\d+\s*$"""), "").trim()
@@ -336,34 +362,33 @@ fun MyMixScreen(
     }
 
     val backgroundColor = MaterialTheme.colorScheme.background
-    val networkLoader = rememberNetworkLoader(HttpClient(CIO))
-    val dominantColorState = rememberDominantColorState(
-        defaultColor = MaterialTheme.colorScheme.primary,
-        defaultOnColor = backgroundColor,
-        loader = networkLoader,
-    )
+    // Fork: the colours come from the artwork's palette and from nothing else. Dominant paints the
+    // page, vibrant is the field's second colour, and both are used exactly as the palette reports
+    // them — no hue shift, no channel rotation and no saturation forcing, because every one of those
+    // put a colour on screen that the cover does not contain.
     val artworkUrl = selectedMix?.thumbnails?.lastOrNull()?.url
-    LaunchedEffect(artworkUrl) {
-        artworkUrl?.let { dominantColorState.updateFrom(Url(it)) }
-    }
+    val playingArtworkUrl = nowPlaying?.songEntity?.thumbnails
+
+    val mixArtworkPalette = rememberArtworkPalette(artworkUrl)
+    val playingArtworkPalette = rememberArtworkPalette(playingArtworkUrl)
+
+    val mixDominant = mixArtworkPalette?.dominantColorOrNull() ?: MaterialTheme.colorScheme.primary
+    val mixVibrant = mixArtworkPalette?.vibrantColorOrNull() ?: mixDominant
+    val playingDominantTarget = playingArtworkPalette?.dominantColorOrNull() ?: mixDominant
+    val playingVibrantTarget = playingArtworkPalette?.vibrantColorOrNull() ?: mixVibrant
+
     val dominant by animateColorAsState(
-        targetValue = dominantColorState.color,
+        targetValue = mixDominant,
         animationSpec = tween(700),
     )
-    // Fork: the field follows the SONG, so every skip hands over that track's own colour — slowly
-    // enough that the handover reads as a cross-fade rather than a cut, which is why the tween is long
-    // and the fade it drives is long too.
-    val playingArtworkUrl = nowPlaying?.songEntity?.thumbnails
-    val playingColorState = rememberDominantColorState(
-        defaultColor = MaterialTheme.colorScheme.primary,
-        defaultOnColor = backgroundColor,
-        loader = networkLoader,
-    )
-    LaunchedEffect(playingArtworkUrl) {
-        playingArtworkUrl?.let { playingColorState.updateFrom(Url(it)) }
-    }
+    // Fork: the field follows the SONG, so every skip hands over that track's own colours — slowly
+    // enough that the handover reads as a cross-fade rather than a cut.
     val playingDominant by animateColorAsState(
-        targetValue = playingColorState.color,
+        targetValue = playingDominantTarget,
+        animationSpec = tween(900),
+    )
+    val playingVibrant by animateColorAsState(
+        targetValue = playingVibrantTarget,
         animationSpec = tween(900),
     )
 
@@ -376,9 +401,13 @@ fun MyMixScreen(
     // and a frozen field. The player itself is the only thing that always knows the truth.
     val mediaPlayerHandler: MediaPlayerHandler = koinInject()
     var liveIsPlaying by remember { mutableStateOf(false) }
+    var audioSessionId by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) {
         while (true) {
             liveIsPlaying = runCatching { mediaPlayerHandler.player.isPlaying }.getOrDefault(false)
+            // Fork: the analyser attaches to the player's OWN audio session, and every ExoPlayer has
+            // its own, so the id has to be re-read on the same poll that keeps isPlaying honest.
+            audioSessionId = runCatching { mediaPlayerHandler.player.audioSessionId }.getOrDefault(0)
             delay(500)
         }
     }
@@ -397,14 +426,30 @@ fun MyMixScreen(
     // A near-white cover would paint a near-white field, so a pale colour is swapped for the app
     // accent: the hero has to stay saturated for white text to sit on it.
     val fieldColor = if (heroDominant.luminance() > 0.72f) MaterialTheme.colorScheme.primary else heroDominant
-    // Fork: BOTH field colours come from the cover. The second one is the cover's own hue pushed a
-    // little way round the wheel, so a red sleeve yields a red-to-magenta field rather than red-to-the-
-    // app's-accent, and the animation carries the artwork's colours instead of the theme's.
-    val waveSecondary = remember(fieldColor) { shiftHue(fieldColor, 0.42f) }
+    // Fork: the second colour is the cover's own VIBRANT swatch — no rotation and no theme accent, so
+    // nothing appears on the page that the artwork does not already contain.
+    val waveSecondary = if (startedMixId != null) playingVibrant else mixVibrant
 
     // Fork: the field was frozen in the background because the animation only ran while the tab was
     // composed, and it read a transport flag that goes stale there.
     val isPlayingNow = if (startedMixId != null) liveIsPlaying else controllerState.isPlaying
+
+    // Fork: offline mode. Losing the network turns it on by itself; the switch beside the button that
+    // opens the original Mix grid covers the case where the network is up but YouTube is unreachable
+    // (a VPN in a region YouTube Music does not serve), which no connectivity callback can detect.
+    val isOnline by rememberIsOnline()
+    var manualOffline by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        manualOffline =
+            dataStoreManager.getString(MyMixPrefs.OFFLINE_MODE).first() == DataStoreManager.TRUE
+    }
+    val offline = !isOnline || manualOffline
+
+    // Fork: real levels of the app's own playback, so the field reacts to the music itself rather than
+    // to the volume slider. An all-zero result means no analyser is attached — no permission, an older
+    // phone, Desktop — and the visualizer falls back to its synthetic beat.
+    val audioLevels by rememberMyMixAudioLevels(isPlaying = isPlayingNow, sessionId = audioSessionId)
+    val analyserActive = !audioLevels.isSilent
 
     // Fork: the like button has to land in YOUTUBE's liked songs, not only in the app's local list. The
     // local toggle stays because the rest of the app reads that flag, but the account is what the user
@@ -526,10 +571,88 @@ fun MyMixScreen(
         }
     }
 
+    // Fork: everything the offline mode plays is already on disk — the cached mix first, the cache of
+    // the account's liked songs as the fallback — so nothing here touches the network.
+    fun playOffline() {
+        if (isPreparing) return
+        isPreparing = true
+        playFailed = false
+        scope.launch {
+            try {
+                val cachedIds = dataStoreManager.getString(MyMixPrefs.CACHED_IDS).first()
+                    .orEmpty()
+                    .split(",")
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                val downloadedIds = if (cachedIds.isEmpty()) {
+                    songRepository.getDownloadedSongs().first().orEmpty().map { it.videoId }
+                } else {
+                    songRepository.getDownloadedVideoIdListFromListVideoIdAsFlow(cachedIds).first()
+                }
+                val songs = songRepository.getSongsByListVideoId(downloadedIds).first()
+                val tracks = songs.toArrayListTrack()
+                if (tracks.isEmpty()) {
+                    playFailed = true
+                    return@launch
+                }
+                sharedViewModel.setQueueData(
+                    QueueData.Data(
+                        listTracks = tracks,
+                        firstPlayedTrack = tracks.first(),
+                        playlistId = null,
+                        playlistName = getStringBlocking(Res.string.my_mix_offline),
+                        playlistType = QueuePlaylistType.PLAYLIST,
+                        continuation = null,
+                    ),
+                )
+                sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
+                startedMixId = OFFLINE_MODE_ID
+            } finally {
+                isPreparing = false
+            }
+        }
+    }
+
+    // Fork: when the network comes back while the offline cache is playing, the supermix is appended to
+    // the queue rather than swapped in — the current track finishes, and the room is handed over from
+    // the NEXT one, which is what the user asked for.
+    var offlineQueueWasPlaying by remember { mutableStateOf(false) }
+    LaunchedEffect(offline) {
+        if (offline) {
+            if (startedMixId == OFFLINE_MODE_ID) offlineQueueWasPlaying = true
+            return@LaunchedEffect
+        }
+        if (!offlineQueueWasPlaying) return@LaunchedEffect
+        offlineQueueWasPlaying = false
+        val mix = superMix ?: return@LaunchedEffect
+        val fetched = withTimeoutOrNull(30_000) {
+            val flow = if (mix.browseId.isRadioPlaylistId()) {
+                playlistRepository.getRadio(
+                    radioId = mix.browseId,
+                    defaultDescription = getStringBlocking(Res.string.auto_created_by_youtube_music),
+                    radioString = getStringBlocking(Res.string.radio),
+                    viewString = getStringBlocking(Res.string.view_count),
+                )
+            } else {
+                playlistRepository.getPlaylistData(
+                    playlistId = mix.browseId,
+                    viewString = getStringBlocking(Res.string.view_count),
+                )
+            }
+            flow.first()
+        }
+        val tracks = (fetched as? Resource.Success<Pair<PlaylistBrowse, String?>>)?.data?.first?.tracks
+        if (!tracks.isNullOrEmpty()) {
+            sharedViewModel.addListToQueue(ArrayList(tracks))
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0B0B0F)),
+            // Fork: the flat artwork colour sits behind the field, so pausing — which fades the field
+            // out — reveals the cover's own tone instead of a black page.
+            .background(fieldColor),
     ) {
         // The field is the page, not a decoration inside it: it runs under the whole screen and the
         // list scrolls over it. On Android 13+ this is a GPU shader; older phones and Desktop get the
@@ -538,11 +661,14 @@ fun MyMixScreen(
             colorPrimary = fieldColor,
             colorSecondary = waveSecondary,
             modifier = Modifier.fillMaxSize(),
-            // The field answers to the transport, not to this tab's own player: music playing from
-            // anywhere lights it up, and pausing anywhere drops it back to grey.
+            // The field answers to the transport, not to this tab's own player.
             isPlaying = isPlayingNow,
-            amplitude = controllerState.volume,
-            bpm = 96f,
+            // Fork: loudness and bass come from the app's own audio session, and speed from the treble
+            // content. All three are zero when no analyser could be attached, and the field then runs
+            // its own synthetic beat instead.
+            amplitude = audioLevels.rms,
+            bass = audioLevels.bass,
+            speed = if (analyserActive) 0.5f + 1.6f * audioLevels.treble else 1f,
         )
 
         // Only the bottom of the page is scrimmed, and only so the pills and the cache card stay
@@ -588,12 +714,34 @@ fun MyMixScreen(
                             style = typo().labelLarge,
                             color = Color.White.copy(alpha = 0.85f),
                         )
-                        IconButton(onClick = { navController.navigate(MixForYouOriginalDestination) }) {
-                            Icon(
-                                imageVector = SimpIcons.Sensors,
-                                contentDescription = stringResource(Res.string.my_mix_open_original),
-                                tint = Color.White,
-                            )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Fork: the manual offline switch. Needed because a VPN in a region
+                            // YouTube Music does not serve leaves the network up and the mixes
+                            // unreachable — no connectivity callback can see that.
+                            IconButton(
+                                onClick = {
+                                    manualOffline = !manualOffline
+                                    scope.launch {
+                                        dataStoreManager.putString(
+                                            MyMixPrefs.OFFLINE_MODE,
+                                            if (manualOffline) DataStoreManager.TRUE else DataStoreManager.FALSE,
+                                        )
+                                    }
+                                },
+                            ) {
+                                Icon(
+                                    imageVector = SimpIcons.CloudOff,
+                                    contentDescription = stringResource(Res.string.my_mix_offline),
+                                    tint = if (offline) Color.White else Color.White.copy(alpha = 0.4f),
+                                )
+                            }
+                            IconButton(onClick = { navController.navigate(MixForYouOriginalDestination) }) {
+                                Icon(
+                                    imageVector = SimpIcons.Sensors,
+                                    contentDescription = stringResource(Res.string.my_mix_open_original),
+                                    tint = Color.White,
+                                )
+                            }
                         }
                     }
 
@@ -604,7 +752,7 @@ fun MyMixScreen(
                     // While a new selection is loading the player would still be showing the previous
                     // track, so the loading state wins: what is on screen must describe what the user
                     // has just chosen, not what is still playing.
-                    if (startedMixId != null && nowSong != null && !isPreparing) {
+                    if (nowSong != null && !isPreparing && (isPlayingNow || controllerState.isPlaying)) {
                         MyMixNowPlaying(
                             song = nowSong,
                             isPlaying = isPlayingNow,
@@ -658,8 +806,10 @@ fun MyMixScreen(
             }
 
             // Fork: the mood row sits outside the hero. Inside it, the player's own height squeezed the
-            // row until its pills were unreadable as soon as playback started.
-            item(key = "my_mix_moods") {
+            // row until its pills were unreadable as soon as playback started. Offline it is hidden
+            // entirely — the moods are online shelves, so offering them with no network is a lie.
+            if (!offline) {
+                item(key = "my_mix_moods") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -725,6 +875,7 @@ fun MyMixScreen(
                             }
                         }
 
+                }
             }
 
             // The big button is the FIRST start and nothing else: choosing a mood starts it immediately,
@@ -738,7 +889,11 @@ fun MyMixScreen(
                     ) {
                         FilledIconButton(
                             onClick = {
-                                if (isLikesSelected) playLikes() else selectedMix?.let { playMix(it) }
+                                when {
+                                    offline -> playOffline()
+                                    isLikesSelected -> playLikes()
+                                    else -> selectedMix?.let { playMix(it) }
+                                }
                             },
                             modifier = Modifier.size(84.dp),
                             enabled = !isPreparing && (isLikesSelected || selectedMix != null),
@@ -1221,9 +1376,15 @@ private fun MyMixCacheCard(
     onRefreshNow: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val songRepository: SongRepository = koinInject()
     var enabled by remember { mutableStateOf(false) }
     var trackCount by remember { mutableStateOf(MyMixPrefs.DEFAULT_COUNT) }
     var intervalDays by remember { mutableStateOf(MyMixPrefs.DEFAULT_INTERVAL_DAYS) }
+    // Fork: closed on entry — the settings are visited rarely, and the count below is the part that
+    // is worth seeing without asking for it.
+    var expanded by remember { mutableStateOf(false) }
+    var plannedCount by remember { mutableStateOf(0) }
+    var downloadedCount by remember { mutableStateOf(0) }
 
     LaunchedEffect(Unit) {
         enabled = dataStoreManager.getString(MyMixPrefs.AUTO_CACHE).first() == DataStoreManager.TRUE
@@ -1231,6 +1392,24 @@ private fun MyMixCacheCard(
             ?: MyMixPrefs.DEFAULT_COUNT
         intervalDays = dataStoreManager.getString(MyMixPrefs.CACHE_INTERVAL_DAYS).first()?.toIntOrNull()
             ?: MyMixPrefs.DEFAULT_INTERVAL_DAYS
+    }
+
+    // Fork: "downloaded N of M" is answered from the cache worker's own plan (CACHED_IDS) crossed with
+    // the songs actually on disk, so it cannot drift from what the worker decided.
+    LaunchedEffect(Unit) {
+        dataStoreManager.getString(MyMixPrefs.CACHED_IDS)
+            .distinctUntilChanged()
+            .collect { raw ->
+                val ids = raw.orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                plannedCount = ids.size
+                downloadedCount = if (ids.isEmpty()) {
+                    0
+                } else {
+                    runCatching {
+                        songRepository.getDownloadedVideoIdListFromListVideoIdAsFlow(ids).first().size
+                    }.getOrDefault(0)
+                }
+            }
     }
 
     fun setEnabled(value: Boolean) {
@@ -1265,10 +1444,13 @@ private fun MyMixCacheCard(
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { expanded = !expanded },
+                ) {
                     Text(
                         text = stringResource(Res.string.my_mix_auto_cache),
                         style = typo().titleMedium,
@@ -1278,6 +1460,13 @@ private fun MyMixCacheCard(
                         text = stringResource(Res.string.my_mix_auto_cache_desc),
                         style = typo().bodySmall,
                         color = Color.White.copy(alpha = 0.72f),
+                    )
+                    // Fork: visible whether the block is open or closed — "how much of the mix is on
+                    // disk" is the one number worth reading at a glance.
+                    Text(
+                        text = "${stringResource(Res.string.my_mix_cached_count)} $downloadedCount / $plannedCount",
+                        style = typo().bodySmall,
+                        color = Color.White.copy(alpha = 0.9f),
                     )
                 }
                 Switch(
@@ -1292,9 +1481,16 @@ private fun MyMixCacheCard(
                         uncheckedBorderColor = Color.White.copy(alpha = 0.45f),
                     ),
                 )
+                IconButton(onClick = { expanded = !expanded }) {
+                    Icon(
+                        imageVector = if (expanded) SimpIcons.UnfoldLess else SimpIcons.UnfoldMore,
+                        contentDescription = stringResource(Res.string.my_mix_auto_cache),
+                        tint = Color.White,
+                    )
+                }
             }
 
-            AnimatedVisibility(visible = enabled) {
+            AnimatedVisibility(visible = expanded && enabled) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     StepperRow(
                         label = stringResource(Res.string.my_mix_cache_count),

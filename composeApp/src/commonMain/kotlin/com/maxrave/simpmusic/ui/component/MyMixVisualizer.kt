@@ -11,19 +11,27 @@ import androidx.compose.ui.unit.dp
  *
  * On Android 13 and up this is a GPU shader: procedural gradient noise, domain-warped and combined
  * with a metaball field, so the surface is a shapeless, volumetric, glowing liquid rather than a
- * collection of drawn shapes. Everything that makes it react to the music arrives as uniforms —
- * time, the track's speed, the playback level and a bass pulse — and the palette comes from the
- * artwork. Below Android 13 there is no [android.graphics.RuntimeShader] to compile the shader with,
- * so the same parameters drive [MyMixWave], the Canvas-based blob field, which keeps the look on
- * older phones instead of dropping the effect.
+ * collection of drawn shapes. Below Android 13 there is no `android.graphics.RuntimeShader`, so the
+ * same parameters drive [MyMixWave], the Canvas-based blob field, which keeps the look on older
+ * phones instead of dropping the effect.
  *
- * @param colorPrimary dominant colour of the artwork being shown.
- * @param colorSecondary the app accent, used as the second stop of the palette.
- * @param isPlaying drives the level: paused is grey, slow and dim, playing is saturated and moving.
- * @param amplitude the player's own volume (0..1), the cheapest honest "how loud is it" signal.
- * @param bass the beat pulse (0..1); on Android it is derived from the transport state, and it is the
- *   hook where a real FFT would be attached if the feature ever grows one.
- * @param bpm tempo the pulse is clocked at.
+ * Everything that makes it react arrives as parameters, and all of them come from the app's own
+ * playback: [amplitude] and [bass] are read from the playing stream through
+ * `android.media.audiofx.Visualizer` (see `rememberMyMixAudioLevels`), and [speed] follows the
+ * treble content, so the field races through busy passages and crawls through quiet ones. When the
+ * analyser is unavailable — no permission, older phone, Desktop — all three arrive as zero and the
+ * field falls back to a synthetic beat of its own.
+ *
+ * Pausing does not stop the picture, it DISSOLVES it: [isPlaying] drives a level that fades over
+ * 600 ms, and the level is the field's own alpha. What is left underneath is the flat
+ * [colorPrimary] the screen paints behind this — no vignette, no noise.
+ *
+ * @param colorPrimary the artwork's dominant colour, painted flat behind everything.
+ * @param colorSecondary the artwork's vibrant swatch, the second stop of the field's palette.
+ * @param isPlaying fades the whole field in and out — it must never snap.
+ * @param amplitude loudness of the current moment (0..1).
+ * @param bass low-frequency energy (0..1), the kick drum.
+ * @param speed how fast the field flows (0.5 slow .. 2.0 fast), from the treble content.
  */
 @Composable
 expect fun MyMixVisualizer(
@@ -31,9 +39,9 @@ expect fun MyMixVisualizer(
     colorSecondary: Color,
     modifier: Modifier = Modifier,
     isPlaying: Boolean = true,
-    amplitude: Float = 1f,
+    amplitude: Float = 0f,
     bass: Float = 0f,
-    bpm: Float = 96f,
+    speed: Float = 1f,
     intensity: Float = 1f,
     fallbackSize: Dp = 240.dp,
     fallbackFullBleed: Boolean = true,

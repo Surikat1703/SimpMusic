@@ -6,6 +6,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
@@ -18,13 +19,12 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.maxrave.logger.Logger
-import kotlin.math.cos
 import kotlin.math.exp
 
 /**
  * Android actual for the My Mix field.
  *
- * On API 33+ this is a runtime AGSL shader ([android.graphics.RuntimeShader]) drawn into the Compose
+ * On API 33+ this is a runtime AGSL shader (`android.graphics.RuntimeShader`) drawn into the Compose
  * canvas, so the whole picture — the simplex-noise deformation, the amplitude ripple, the vignette —
  * is computed per pixel on the GPU and nothing is uploaded. Below 33 the same parameters drive
  * [MyMixWave] instead.
@@ -36,9 +36,9 @@ import kotlin.math.exp
  * CI: it is wrapped in `runCatching` and the field silently falls back to the Canvas renderer, which
  * is why that renderer has to look good on its own.
  *
- * Uniforms come from the player, not from the audio stream: `amplitude` is the volume and `bass` the
- * beat envelope derived from the track's BPM, because the app owns no audio session to attach a
- * Visualizer to. `bass` is the parameter a real FFT would drive later.
+ * The palette is the artwork's own — dominant plus vibrant, exactly as the palette reports them.
+ * Nothing is pushed towards full saturation here: a cover with a muted mood should give a muted
+ * field, which is the whole point of taking the colours from it.
  *
  * `Modifier.drawWithCache` keeps the clock and the level read inside the draw pass, so a new frame
  * invalidates only the draw — no recomposition per frame.
@@ -51,7 +51,7 @@ actual fun MyMixVisualizer(
     isPlaying: Boolean,
     amplitude: Float,
     bass: Float,
-    bpm: Float,
+    speed: Float,
     intensity: Float,
     fallbackSize: Dp,
     fallbackFullBleed: Boolean,
@@ -64,7 +64,7 @@ actual fun MyMixVisualizer(
             isPlaying = isPlaying,
             amplitude = amplitude,
             bass = bass,
-            bpm = bpm,
+            speed = speed,
             intensity = intensity,
             fallback = {
                 MyMixWave(
@@ -72,11 +72,12 @@ actual fun MyMixVisualizer(
                     colorSecondary = colorSecondary,
                     modifier = modifier,
                     size = fallbackSize,
-                    isActive = true,
                     intensity = intensity,
                     fullBleed = fallbackFullBleed,
                     isPlaying = isPlaying,
-                    bpm = bpm,
+                    amplitude = amplitude,
+                    bass = bass,
+                    speed = speed,
                 )
             },
         )
@@ -86,11 +87,12 @@ actual fun MyMixVisualizer(
             colorSecondary = colorSecondary,
             modifier = modifier,
             size = fallbackSize,
-            isActive = true,
             intensity = intensity,
             fullBleed = fallbackFullBleed,
             isPlaying = isPlaying,
-            bpm = bpm,
+            amplitude = amplitude,
+            bass = bass,
+            speed = speed,
         )
     }
 }
@@ -103,22 +105,27 @@ private fun MyMixShaderField(
     isPlaying: Boolean,
     amplitude: Float,
     bass: Float,
-    bpm: Float,
+    speed: Float,
     intensity: Float,
     fallback: @Composable () -> Unit,
 ) {
-    val shader = remember {
-        runCatching { android.graphics.RuntimeShader(MyMixShader.AGSL) }
-            .onFailure { Logger.e("MyMixVisualizer", "AGSL field rejected, using the Canvas fallback: ${it.message}") }
-            .getOrNull()
-    }
+    val shader =
+        remember {
+            runCatching { android.graphics.RuntimeShader(MyMixShader.AGSL) }
+                .onFailure {
+                    Logger.e(
+                        "MyMixVisualizer",
+                        "AGSL field rejected, using the Canvas fallback: ${it.message}",
+                    )
+                }.getOrNull()
+        }
     if (shader == null) {
         fallback()
         return
     }
 
     val clock = remember { mutableFloatStateOf(0f) }
-    androidx.compose.runtime.LaunchedEffect(Unit) {
+    LaunchedEffect(Unit) {
         var previous = withFrameNanos { it }
         while (true) {
             val now = withFrameNanos { it }
@@ -126,85 +133,66 @@ private fun MyMixShaderField(
             previous = now
         }
     }
-    val energy by animateFloatAsState(
+    // Fork: 600 ms, and the level is the field's ALPHA — pausing dissolves the shader into the flat
+    // artwork colour the screen paints behind it, so the page never jumps and never turns black.
+    val level by animateFloatAsState(
         targetValue = if (isPlaying) 1f else 0f,
-        animationSpec = tween(900, easing = FastOutSlowInEasing),
-        label = "myMixShaderEnergy",
+        animationSpec = tween(600, easing = FastOutSlowInEasing),
+        label = "myMixShaderLevel",
     )
-    val paint = remember {
-        Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            isDither = true
-            style = Paint.Style.FILL
-        }
-    }
-
-    androidx.compose.foundation.layout.Box(
-        modifier = modifier.drawWithCache {
-            onDrawBehind {
-                val level = energy
-                val t = clock.value
-                // Fork: the field lives in the COVER's colours at all times, playing or not — a paused
-                // track must leave the page filled with its own hue, not with grey. The grey wash was
-                // mixed in by the level, so pausing erased the artwork entirely.
-                val hot = vivid(colorPrimary)
-                val cool = vivid(colorSecondary)
-
-                val beat = (t * bpm / 60f) % 1f
-                val pulse = (exp(-5.0f * beat) * level).coerceIn(0f, 1f)
-
-                // Uniforms match assets/shaders/my_wave.frag one for one: the same program is used on
-                // Flutter and here, so the field looks the same on both.
-                shader.setFloatUniform("uResolution", size.width, size.height)
-                shader.setFloatUniform("uTime", t)
-                // Fork: the tempo of the motion follows the OUTPUT LEVEL, not the track's BPM — quiet
-                // passages crawl and loud ones race, which is the reaction the ear expects. The BPM
-                // figure stays in the signature for a future real beat detector.
-                shader.setFloatUniform("uBpmSpeed", 0.45f + 0.85f * level)
-                shader.setFloatUniform(
-                    "uAmplitude",
-                    (
-                        amplitude.coerceIn(0f, 1f) * (0.20f + 0.80f * level) +
-                            pulse * 0.35f +
-                            bass.coerceIn(0f, 1f) * level * 0.30f
-                        ).coerceIn(0f, 1f) * intensity,
-                )
-                shader.setFloatUniform("uColor1", hot.red, hot.green, hot.blue)
-                shader.setFloatUniform("uColor2", cool.red, cool.green, cool.blue)
-
-                paint.shader = shader
-                drawIntoCanvas { canvas ->
-                    canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
-                }
+    val paint =
+        remember {
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                isDither = true
+                style = Paint.Style.FILL
             }
         }
-    )
-}
 
-/**
- * Fork: pushes a colour towards full saturation and a usable brightness, because artwork palettes are
- * frequently washed out or nearly grey and the field would otherwise inherit a grey wash.
- */
-private fun vivid(color: Color): Color {
-    val hsv = FloatArray(3)
-    android.graphics.Color.colorToHSV(
-        android.graphics.Color.argb(
-            (color.alpha * 255f).toInt().coerceIn(0, 255),
-            (color.red * 255f).toInt().coerceIn(0, 255),
-            (color.green * 255f).toInt().coerceIn(0, 255),
-            (color.blue * 255f).toInt().coerceIn(0, 255),
-        ),
-        hsv,
+    androidx.compose.foundation.layout.Box(
+        modifier =
+            modifier.drawWithCache {
+                onDrawBehind {
+                    val t = clock.value
+                    val energy = level
+                    if (energy <= 0.002f) return@onDrawBehind
+
+                    // Fork: the analyser's own numbers. When it is unavailable — no permission, an
+                    // older phone, Desktop — both arrive as zero and a synthetic beat takes over, so
+                    // the field still moves to something even though nothing can be measured.
+                    val realAmplitude = amplitude.coerceIn(0f, 1f)
+                    val realBass = bass.coerceIn(0f, 1f)
+                    val hasAnalyser = realAmplitude > 0.004f || realBass > 0.004f
+                    val syntheticBeat = (t * 2f) % 1f
+                    val syntheticPulse = exp(-4.0f * syntheticBeat)
+
+                    val drive = if (hasAnalyser) (realAmplitude + realBass * 0.6f).coerceIn(0f, 1.4f) else syntheticPulse
+                    // Speed comes from the treble content when there is an analyser: busy passages
+                    // race and quiet ones crawl. Without one it stays at a steady, gentle pace.
+                    val flow = if (hasAnalyser) speed.coerceIn(0.5f, 2f) else 0.85f
+
+                    shader.setFloatUniform("uResolution", size.width, size.height)
+                    shader.setFloatUniform("uTime", t)
+                    shader.setFloatUniform("uSpeed", flow)
+                    shader.setFloatUniform("uAmplitude", (drive * intensity).coerceIn(0f, 1.5f))
+                    shader.setFloatUniform("uBass", (realBass * intensity).coerceIn(0f, 1f))
+                    shader.setFloatUniform("uLevel", energy)
+                    shader.setFloatUniform("uColor1", colorPrimary.red, colorPrimary.green, colorPrimary.blue)
+                    shader.setFloatUniform("uColor2", colorSecondary.red, colorSecondary.green, colorSecondary.blue)
+
+                    paint.shader = shader
+                    drawIntoCanvas { canvas ->
+                        canvas.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint)
+                    }
+                }
+            }
     )
-    hsv[1] = maxOf(hsv[1], 0.72f)
-    hsv[2] = maxOf(hsv[2], 0.78f)
-    return Color(android.graphics.Color.HSVToColor(hsv))
 }
 
 /**
  * The AGSL program — the same shader that ships as `flutter_my_wave/assets/shaders/my_wave.frag`,
- * ported from GLSL ES to AGSL. The maths is untouched: simplex noise deforms the field, the second
- * octave is fed the first one, `uAmplitude` adds a travelling ripple, the two colours are mixed by
- * that field and a vignette darkens the edges.
+ * ported from GLSL ES to AGSL. The maths is the original: simplex noise deforms the field, the
+ * second octave is fed the first one, the amplitude adds a travelling ripple, the two colours are
+ * mixed by that field and a vignette darkens the edges.
  *
  * Only three mechanical changes were made, none of which affect the result:
  *  - the entry point is `half4 main(float2 fragCoord)` on `fragCoord` instead of `void main()` on
@@ -213,13 +201,19 @@ private fun vivid(color: Color): Color {
  *  - the two vector swizzle assignments (`x12.xy -= i1`, `g.yz = …`) are written as whole-value
  *    assignments, because SkSL is a restricted GLSL and a rejected program would silently fall back
  *    to the Canvas renderer on the device.
+ *
+ * Two fork changes on top of that, both about reacting to the music: the noise scale grows with the
+ * amplitude (a kick breaks the field into many small shapes instead of one broad one) and the return
+ * value's ALPHA is the level, which is what dissolves the field on pause.
  */
 private object MyMixShader {
     const val AGSL = """
 uniform float2 uResolution;
 uniform float uTime;
-uniform float uBpmSpeed;
+uniform float uSpeed;
 uniform float uAmplitude;
+uniform float uBass;
+uniform float uLevel;
 uniform float3 uColor1;
 uniform float3 uColor2;
 
@@ -258,28 +252,29 @@ half4 main(float2 fragCoord) {
     float2 res = max(uResolution, float2(1.0, 1.0));
     float2 uv = fragCoord / res;
 
-    // Animation time, scaled by the loudness-driven speed
-    float amp = clamp(uAmplitude, 0.0, 1.0);
-    float t = uTime * 0.3 * uBpmSpeed;
+    // Animation time, scaled by how busy the music currently is
+    float amp = clamp(uAmplitude, 0.0, 1.5);
+    float t = uTime * uSpeed;
 
-    // Deformation from noise and bass. Fork: the noise is SCALED by the amplitude, so loud passages
-    // break the field into many small shapes and quiet ones leave a few broad ones — the shapes change
-    // size with the level, which is the reaction the user asked for.
-    float scale = 2.0 + amp * 1.8;
+    // Deformation from noise and the low end. The noise scale grows with the amplitude, so a kick
+    // breaks the field into many small shapes and a quiet passage leaves a few broad ones.
+    float scale = 1.5 + amp * 2.5;
     float noise1 = snoise(uv * scale + float2(t * 0.5, t * 0.3));
     float noise2 = snoise(uv * (scale + 1.0) - float2(t * 0.2, noise1));
 
-    // Pulse from the amplitude (loudness)
-    float wave = noise2 + (amp * 0.9 * sin(uv.x * 10.0 + t * 5.0));
+    // Travelling ripple, driven by the loudness
+    float wave = noise2 * 1.2 + (amp * 1.5 * sin(uv.x * 12.0 + t * 6.0));
 
-    // Colour mixing
+    // Colour mixing between the cover's two colours
     float3 color = mix(uColor1, uColor2, clamp(wave + 0.5, 0.0, 1.0));
 
     // Edge darkening (vignette)
     float vignette = uv.x * (1.0 - uv.x) * uv.y * (1.0 - uv.y) * 15.0;
     vignette = clamp(pow(vignette, 0.5), 0.0, 1.0);
 
-    return half4(color * vignette, 1.0);
+    // The alpha is the level: paused means fully transparent, which reveals the flat artwork colour
+    // painted behind this field.
+    return half4(color * vignette, uLevel);
 }
 """
 }

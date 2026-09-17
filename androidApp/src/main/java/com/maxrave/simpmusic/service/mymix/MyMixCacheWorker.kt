@@ -87,10 +87,14 @@ class MyMixCacheWorker(
         // written first; an existing row is left untouched (the insert replaces, and the state the
         // DAO keeps for an already-downloaded song is preserved by merging it forward).
         val queued = mutableSetOf<String>()
+        // Fork: the whole plan, not just the new downloads — the tab shows "downloaded N of M" and M
+        // is how many tracks this run decided the mix should consist of.
+        val planned = mutableListOf<String>()
         var budget = trackCount
 
         for (track in tracks) {
             if (budget <= 0) break
+            planned.add(track.videoId)
             val entity = songRepository.getSongById(track.videoId).firstOrNull()
             val isDownloaded = entity?.downloadState == DownloadState.STATE_DOWNLOADED
             val isSpent = isDownloaded && (entity?.totalPlayTime ?: 0L) > 0L
@@ -116,7 +120,8 @@ class MyMixCacheWorker(
         }
 
         dataStoreManager.putString(MyMixPrefs.LAST_CACHE_AT, Clock.System.now().toEpochMilliseconds().toString())
-        Logger.w(TAG, "Queued ${queued.size} download(s)")
+        dataStoreManager.putString(MyMixPrefs.CACHED_IDS, planned.joinToString(","))
+        Logger.w(TAG, "Queued ${queued.size} download(s) of ${planned.size} planned")
     }
 
     private suspend fun isDue(intervalDays: Int): Boolean {
