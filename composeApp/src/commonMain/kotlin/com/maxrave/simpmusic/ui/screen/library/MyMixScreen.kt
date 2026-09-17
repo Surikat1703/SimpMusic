@@ -335,27 +335,8 @@ fun MyMixScreen(
     if (allMixes.isNotEmpty()) lastMixes = allMixes
     val effectiveMixes = if (allMixes.isNotEmpty()) allMixes else lastMixes
 
-    // Fork: this tab is now the only way into the mixes, so it has to start the fetch the original
-    // grid used to trigger itself — without this the screen sits on "Loading" forever.
-    //
-    // Fork: self-healing online detection on top. The connectivity callback can miss a radio
-    // wake-up while this tab stays composed, which used to freeze the page offline until another
-    // tab was opened. So while the shelf is empty (and the manual switch is off) the tab retries
-    // the fetch itself every 15 seconds — the first success latches and the page leaves offline
-    // mode on its own, no matter what the callback said.
-    var probeSucceeded by remember { mutableStateOf(false) }
-    LaunchedEffect(manualOffline) {
-        if (manualOffline) return@LaunchedEffect
-        while (true) {
-            if (viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
-                runCatching { viewModel.getYouTubeMixedForYou() }
-            } else {
-                probeSucceeded = true
-                return@LaunchedEffect
-            }
-            delay(15_000)
-        }
-    }
+    // Fork: this tab is now the only way into the mixes, so the shelf fetch below (in the
+    // self-healing probe) starts it — without that the screen sits on "Loading" forever.
 
     val defaultMix = remember(effectiveMixes) {
         effectiveMixes.firstOrNull { it.browseId.startsWith("RDTM") && it.title.contains("super", true) }
@@ -535,6 +516,24 @@ fun MyMixScreen(
     LaunchedEffect(Unit) {
         manualOffline =
             dataStoreManager.getString(MyMixPrefs.OFFLINE_MODE).first() == DataStoreManager.TRUE
+    }
+    // Fork: self-healing online detection. The connectivity callback can miss a radio wake-up
+    // while this tab stays composed, which used to freeze the page offline until another tab was
+    // opened. So while the shelf is empty (and the manual switch is off) the tab retries the fetch
+    // itself every 15 seconds — the first success latches and the page leaves offline mode on its
+    // own, no matter what the callback said.
+    var probeSucceeded by remember { mutableStateOf(false) }
+    LaunchedEffect(manualOffline) {
+        if (manualOffline) return@LaunchedEffect
+        while (true) {
+            if (viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
+                runCatching { viewModel.getYouTubeMixedForYou() }
+            } else {
+                probeSucceeded = true
+                return@LaunchedEffect
+            }
+            delay(15_000)
+        }
     }
     val offline = (!isOnline && !probeSucceeded) || manualOffline
 
