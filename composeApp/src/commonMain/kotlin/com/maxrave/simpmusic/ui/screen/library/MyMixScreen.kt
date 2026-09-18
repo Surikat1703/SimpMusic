@@ -270,12 +270,6 @@ private fun Palette.dominantColorOrNull(): Color? =
 private fun Palette.vibrantColorOrNull(): Color? =
     getVibrantColor(0).takeIf { it != 0 }?.let { Color(it) }
 
-/** Fork: the personal mix is now titled "My Mix 1" / "Мой микс 1" — it outranks "super". */
-private fun isMixOne(title: String): Boolean {
-    val lower = title.lowercase()
-    return "mix 1" in lower || "микс 1" in lower
-}
-
 private fun cleanMoodName(raw: String): String {    val deNumbered = raw.replace(Regex("""\s*[#№]?\s*\d+\s*$"""), "").trim()
     return deNumbered
         // "Мой супермикс": the noise word goes first, so what is left behind is only a pronoun.
@@ -351,8 +345,7 @@ fun MyMixScreen(
     // self-healing probe) starts it — without that the screen sits on "Loading" forever.
 
     val defaultMix = remember(effectiveMixes) {
-        effectiveMixes.firstOrNull { isMixOne(it.title) }
-            ?: effectiveMixes.firstOrNull { it.browseId.startsWith("RDTM") && it.title.contains("super", true) }
+        effectiveMixes.firstOrNull { it.browseId.startsWith("RDTM") && it.title.contains("super", true) }
             ?: effectiveMixes.firstOrNull { it.browseId.startsWith("RDTM") }
             ?: effectiveMixes.firstOrNull()
     }
@@ -367,11 +360,10 @@ fun MyMixScreen(
     // from the mood list by id and shown first, so it can be emphasised without its title polluting
     // every other entry.
     val superMix = remember(effectiveMixes, defaultMix) {
-        effectiveMixes.firstOrNull { isMixOne(it.title) }
-            ?: effectiveMixes.firstOrNull { mix ->
-                val title = mix.title.lowercase()
-                "супер" in title || "super" in title
-            } ?: defaultMix
+        effectiveMixes.firstOrNull { mix ->
+            val title = mix.title.lowercase()
+            "супер" in title || "super" in title
+        } ?: defaultMix
     }
     val moodMixes = remember(effectiveMixes, nameFiltered, superMix) {
         val source = nameFiltered.ifEmpty { effectiveMixes }
