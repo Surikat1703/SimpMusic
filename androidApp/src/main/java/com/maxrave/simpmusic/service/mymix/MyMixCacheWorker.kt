@@ -184,7 +184,11 @@ class MyMixCacheWorker(
         if (!picked.isNullOrEmpty()) return picked
 
         val mixes = playlistRepository.getMixedForYou().firstOrNull().orEmpty()
-        return mixes.firstOrNull { it.browseId.startsWith(SUPERMIX_PREFIX) && it.title.contains("super", ignoreCase = true) }?.browseId
+        // Fork: the personal mix is now titled "My Mix 1" / "Мой микс 1" — it outranks "super".
+        return mixes.firstOrNull {
+            it.title.contains("mix 1", ignoreCase = true) || it.title.contains("микс 1", ignoreCase = true)
+        }?.browseId
+            ?: mixes.firstOrNull { it.browseId.startsWith(SUPERMIX_PREFIX) && it.title.contains("super", ignoreCase = true) }?.browseId
             ?: mixes.firstOrNull { it.browseId.startsWith(SUPERMIX_PREFIX) }?.browseId
             ?: mixes.firstOrNull()?.browseId
     }

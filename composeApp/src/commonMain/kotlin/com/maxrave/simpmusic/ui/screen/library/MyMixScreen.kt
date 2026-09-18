@@ -270,8 +270,13 @@ private fun Palette.dominantColorOrNull(): Color? =
 private fun Palette.vibrantColorOrNull(): Color? =
     getVibrantColor(0).takeIf { it != 0 }?.let { Color(it) }
 
-private fun cleanMoodName(raw: String): String {
-    val deNumbered = raw.replace(Regex("""\s*[#№]?\s*\d+\s*$"""), "").trim()
+/** Fork: the personal mix is now titled "My Mix 1" / "Мой микс 1" — it outranks "super". */
+private fun isMixOne(title: String): Boolean {
+    val lower = title.lowercase()
+    return "mix 1" in lower || "микс 1" in lower
+}
+
+private fun cleanMoodName(raw: String): String {    val deNumbered = raw.replace(Regex("""\s*[#№]?\s*\d+\s*$"""), "").trim()
     return deNumbered
         // "Мой супермикс": the noise word goes first, so what is left behind is only a pronoun.
         .replace(Regex("""(?i)\bсупер\s*-?\s*микс(а|ы|ов)?\b"""), " ")
@@ -346,7 +351,8 @@ fun MyMixScreen(
     // self-healing probe) starts it — without that the screen sits on "Loading" forever.
 
     val defaultMix = remember(effectiveMixes) {
-        effectiveMixes.firstOrNull { it.browseId.startsWith("RDTM") && it.title.contains("super", true) }
+        effectiveMixes.firstOrNull { isMixOne(it.title) }
+            ?: effectiveMixes.firstOrNull { it.browseId.startsWith("RDTM") && it.title.contains("super", true) }
             ?: effectiveMixes.firstOrNull { it.browseId.startsWith("RDTM") }
             ?: effectiveMixes.firstOrNull()
     }
@@ -361,10 +367,11 @@ fun MyMixScreen(
     // from the mood list by id and shown first, so it can be emphasised without its title polluting
     // every other entry.
     val superMix = remember(effectiveMixes, defaultMix) {
-        effectiveMixes.firstOrNull { mix ->
-            val title = mix.title.lowercase()
-            "супер" in title || "super" in title
-        } ?: defaultMix
+        effectiveMixes.firstOrNull { isMixOne(it.title) }
+            ?: effectiveMixes.firstOrNull { mix ->
+                val title = mix.title.lowercase()
+                "супер" in title || "super" in title
+            } ?: defaultMix
     }
     val moodMixes = remember(effectiveMixes, nameFiltered, superMix) {
         val source = nameFiltered.ifEmpty { effectiveMixes }
@@ -544,22 +551,26 @@ fun MyMixScreen(
     // Fork: self-healing online detection. The connectivity callback can miss a radio wake-up
     // while this tab stays composed, which used to freeze the page offline until another tab was
     // opened. So while the shelf is empty (and the manual switch is off) the tab retries the fetch
-    // itself every 15 seconds — the first success latches and the page leaves offline mode on its
-    // own, no matter what the callback said.
+    // itself — the first success latches and the page leaves offline mode on its own, no matter
+    // what the callback said. Backoff 15 s ×3 then 60 s so a truly dead network doesn't hammer it.
     var probeSucceeded by remember { mutableStateOf(false) }
     LaunchedEffect(manualOffline) {
         if (manualOffline) return@LaunchedEffect
+        var attempts = 0
         while (true) {
             if (viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
                 runCatching { viewModel.getYouTubeMixedForYou() }
+                attempts++
             } else {
                 probeSucceeded = true
                 return@LaunchedEffect
             }
-            delay(15_000)
+            delay(if (attempts < 3) 15_000 else 60_000)
         }
     }
-    val offline = (!isOnline && !probeSucceeded) || manualOffline
+    // Fork: offline is claimed only when there is nothing to show AND no fetch ever succeeded —
+    // a loaded shelf stays visible even if the OS callback insists there is no network.
+    val offline = manualOffline || (!isOnline && !probeSucceeded && effectiveMixes.isEmpty())
 
     // Fork: the like button has to land in YOUTUBE's liked songs, not only in the app's local list. The
     // local toggle stays because the rest of the app reads that flag, but the account is what the user
