@@ -629,6 +629,10 @@
     <string name="my_mix_open_original">Open Mix for you</string>
     <string name="my_mix_empty">Nothing to play here. Add tracks to your liked songs.</string>
     <string name="my_mix_add_to_likes">Add to liked tracks</string>
+    <string name="my_mix_skip_stuck_title">Track is stuck loading</string>
+    <string name="my_mix_skip_stuck_text">The track will be skipped in %1$d s</string>
+    <string name="my_mix_skip_now">Skip now</string>
+    <string name="my_mix_skip_wait">Keep waiting</string>
     <string name="default_tab">Default tab</string>
     <string name="no_charts_found">No charts found</string>
     <string name="desktop_webview_description">Because of the limitations of Compose Multiplatform, I can not implement WebView on desktop.\nRead this to learn more how to log in in desktop:\n</string>

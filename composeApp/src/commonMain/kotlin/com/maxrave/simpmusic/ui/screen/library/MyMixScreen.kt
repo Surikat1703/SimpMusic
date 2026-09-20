@@ -20,10 +20,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
@@ -35,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -101,6 +104,7 @@ import com.maxrave.simpmusic.viewModel.SharedViewModel
 import com.maxrave.simpmusic.viewModel.UIEvent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -111,7 +115,6 @@ import org.koin.compose.viewmodel.koinViewModel
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.auto_created_by_youtube_music
 import simpmusic.composeapp.generated.resources.my_mix
-import simpmusic.composeapp.generated.resources.my_mix_all_mixes
 import simpmusic.composeapp.generated.resources.my_mix_auto_cache
 import simpmusic.composeapp.generated.resources.my_mix_auto_cache_desc
 import simpmusic.composeapp.generated.resources.my_mix_cached_count
@@ -125,6 +128,10 @@ import simpmusic.composeapp.generated.resources.my_mix_no_mood
 import simpmusic.composeapp.generated.resources.my_mix_open_original
 import simpmusic.composeapp.generated.resources.my_mix_play
 import simpmusic.composeapp.generated.resources.my_mix_preparing
+import simpmusic.composeapp.generated.resources.my_mix_skip_now
+import simpmusic.composeapp.generated.resources.my_mix_skip_stuck_text
+import simpmusic.composeapp.generated.resources.my_mix_skip_stuck_title
+import simpmusic.composeapp.generated.resources.my_mix_skip_wait
 import simpmusic.composeapp.generated.resources.my_mix_subtitle
 import simpmusic.composeapp.generated.resources.my_mix_you_are_offline
 import simpmusic.composeapp.generated.resources.radio
@@ -201,6 +208,10 @@ object MyMixPrefs {
     // Fork: the YouTube Liked Music playlist id. The repository prepends its own "VL".
     // Public so the cache worker can protect these tracks from eviction.
     const val YT_LIKED_PLAYLIST_ID = "LM"
+
+    // Fork: the last successfully fetched YouTube Liked ids, comma separated. Behind a VPN the
+    // live fetch fails, so the worker reuses this set instead of guarding with nothing.
+    const val YT_LIKED_IDS = "my_mix_yt_liked_ids"
 
     const val DEFAULT_COUNT = 100
     const val DEFAULT_INTERVAL_DAYS = 3
@@ -593,6 +604,36 @@ fun MyMixScreen(
         }
     }
 
+    // Fork: a track that will not load must not hang the tab silently. While the player reports
+    // loading for the same track, a watchdog runs: after 2 s stuck it opens a dialog promising a
+    // skip in 5 s, with buttons to skip at once or keep waiting. Only the loading flag is read,
+    // so position ticks never recompose this screen.
+    val trackStuckLoading by remember(sharedViewModel) {
+        sharedViewModel.timeline.map { it.loading }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = false)
+    var skipDialogVideoId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(trackStuckLoading, playingVideoId, isPlayingNow) {
+        if (!trackStuckLoading || playingVideoId == null || !isPlayingNow) {
+            skipDialogVideoId = null
+            return@LaunchedEffect
+        }
+        val watchedId = playingVideoId
+        delay(2000)
+        if (sharedViewModel.timeline.value.loading &&
+            sharedViewModel.nowPlayingState.value.songEntity?.videoId == watchedId &&
+            sharedViewModel.controllerState.value.isPlaying
+        ) {
+            skipDialogVideoId = watchedId
+        }
+    }
+
+    fun resolveSkipDialog(skip: Boolean) {
+        if (skipDialogVideoId != null) {
+            skipDialogVideoId = null
+            if (skip) sharedViewModel.onUIEvent(UIEvent.Next)
+        }
+    }
+
     fun toggleLike() {
         val videoId = playingVideoId ?: return
         val target = !youTubeLiked
@@ -686,6 +727,12 @@ fun MyMixScreen(
                 if (tracks.isEmpty()) {
                     playFailed = true
                     return@launch
+                }
+                // Fork: anything played through the Liked mood IS liked — stamp the local flag so
+                // the cache eviction can never delete it. Tracks from the YouTube Liked fallback
+                // carry no local flag, and the worker's "LM" fetch fails behind a VPN.
+                for (track in tracks) {
+                    runCatching { songRepository.setLocalLiked(track.videoId, true) }
                 }
                 sharedViewModel.setQueueData(
                     QueueData.Data(
@@ -1009,11 +1056,20 @@ fun MyMixScreen(
             // full shelf; offline only the two entries that work without a network — the autocached
             // Supermix and the Liked tracks the user caches themselves.
             item(key = "my_mix_moods") {
+                // Fork: the row's scroll position is keyed on its item set. The default
+                // remembered state survives offline<->online swaps and restores a stale
+                // index into a different pill list, which is exactly the "shifted right,
+                // supermix hidden left" the row opened with. A new set starts at zero.
+                val moodRowState =
+                    remember(offline, superMix?.browseId, moodMixes.map { it.browseId }) {
+                        LazyListState(0, 0)
+                    }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                             LazyRow(
+                                state = moodRowState,
                                 modifier = Modifier.weight(1f),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 contentPadding = PaddingValues(horizontal = 2.dp),
@@ -1125,30 +1181,7 @@ fun MyMixScreen(
                 )
             }
 
-            if (allMixes.isNotEmpty()) {
-                item(key = "my_mix_all") {
-                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            text = stringResource(Res.string.my_mix_all_mixes),
-                            style = typo().titleMedium,
-                            color = Color.White,
-                        )
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            items(items = allMixes, key = { it.browseId }) { mix ->
-                                MixTile(
-                                    mix = mix,
-                                    isSelected = mix.browseId == selectedMix?.browseId,
-                                    onClick = {
-                                        selectedMoodId = mix.browseId
-                                        scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
-                                        playMix(mix)
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+
         }
 
         if (showAllMoods) {
@@ -1167,6 +1200,34 @@ fun MyMixScreen(
                     }
                 },
                 onDismiss = { showAllMoods = false },
+            )
+        }
+
+        // Fork: the stuck-track watchdog. Confirm or the countdown skips to the next track;
+        // decline dismisses it and the stuck track keeps loading quietly (no re-arm for it).
+        if (skipDialogVideoId != null) {
+            var secondsLeft by remember(skipDialogVideoId) { mutableStateOf(5) }
+            LaunchedEffect(skipDialogVideoId) {
+                repeat(5) {
+                    delay(1000)
+                    secondsLeft--
+                }
+                resolveSkipDialog(skip = true)
+            }
+            AlertDialog(
+                onDismissRequest = { resolveSkipDialog(skip = false) },
+                title = { Text(stringResource(Res.string.my_mix_skip_stuck_title)) },
+                text = { Text(stringResource(Res.string.my_mix_skip_stuck_text, secondsLeft)) },
+                confirmButton = {
+                    TextButton(onClick = { resolveSkipDialog(skip = true) }) {
+                        Text(stringResource(Res.string.my_mix_skip_now))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { resolveSkipDialog(skip = false) }) {
+                        Text(stringResource(Res.string.my_mix_skip_wait))
+                    }
+                },
             )
         }
     }
@@ -1530,38 +1591,6 @@ private fun MoodPill(
     }
 }
 
-@Composable
-private fun MixTile(
-    mix: PlaylistsResult,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .width(140.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .clickable { onClick() },
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        AsyncImage(
-            model = mix.thumbnails.lastOrNull()?.url,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(18.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-            contentDescription = mix.title,
-        )
-        Text(
-            text = cleanMoodName(mix.title).ifBlank { mix.title },
-            style = typo().bodyMedium,
-            color = if (isSelected) Color.White else Color.White.copy(alpha = 0.72f),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
 
 @Composable
 private fun MyMixCacheCard(

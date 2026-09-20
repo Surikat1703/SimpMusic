@@ -565,6 +565,10 @@
     <string name="my_mix_open_original">Открыть «Миксы для вас»</string>
     <string name="my_mix_empty">Нечего играть. Добавь треки в любимые.</string>
     <string name="my_mix_add_to_likes">Добавить в любимые треки</string>
+    <string name="my_mix_skip_stuck_title">Трек не загружается</string>
+    <string name="my_mix_skip_stuck_text">Через %1$d с трек будет пропущен</string>
+    <string name="my_mix_skip_now">Пропустить</string>
+    <string name="my_mix_skip_wait">Ждать</string>
     <string name="default_tab">Вкладка по умолчанию</string>
     <string name="no_charts_found">Чарты не найдены</string>
     <string name="desktop_webview_description">В связи с ограничениями Compose Multiplatform, WebView невозможно реализовать на настольных устройствах.\n

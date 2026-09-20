@@ -167,11 +167,21 @@ class MyMixCacheWorker(
                 viewString = "views",
             ).first() as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)
                 ?.data?.first?.tracks.orEmpty().map { it.videoId }.toSet()
-        }.getOrDefault(emptySet())
+        }.getOrNull()
+        if (!youTubeLikedIds.isNullOrEmpty()) {
+            runCatching {
+                dataStoreManager.putString(MyMixPrefs.YT_LIKED_IDS, youTubeLikedIds.joinToString(","))
+            }
+        }
+        // Fork: behind a VPN the Liked fetch fails, so the last good set is kept on disk and
+        // reused — a stale guard only over-protects, while a missing one deletes user data.
+        val knownYouTubeLikedIds = youTubeLikedIds.orEmpty() +
+            dataStoreManager.getString(MyMixPrefs.YT_LIKED_IDS).first()
+                .orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }
         val evicted = mutableSetOf<String>()
         for (entity in candidates) {
             val id = entity.videoId
-            if (entity.liked || id in likedIds || id in youTubeLikedIds) continue
+            if (entity.liked || id in likedIds || id in knownYouTubeLikedIds) continue
             runCatching {
                 downloadHandler.removeDownload(id)
                 songRepository.updateDownloadState(id, DownloadState.STATE_NOT_DOWNLOADED)
