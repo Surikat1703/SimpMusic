@@ -620,7 +620,7 @@ fun MyMixScreen(
         val watchedId = playingVideoId
         delay(2000)
         if (sharedViewModel.timeline.value.loading &&
-            sharedViewModel.nowPlayingState.value.songEntity?.videoId == watchedId &&
+            sharedViewModel.nowPlayingState.value?.songEntity?.videoId == watchedId &&
             sharedViewModel.controllerState.value.isPlaying
         ) {
             skipDialogVideoId = watchedId
