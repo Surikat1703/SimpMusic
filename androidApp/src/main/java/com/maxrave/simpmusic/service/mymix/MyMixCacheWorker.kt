@@ -90,47 +90,59 @@ class MyMixCacheWorker(
         // Rows have to exist before Media3 can report progress onto them, so every candidate is
         // written first; an existing row is left untouched (the insert replaces, and the state the
         // DAO keeps for an already-downloaded song is preserved by merging it forward).
+        val freshIds = tracks.map { it.videoId }.distinct()
+        val freshSet = freshIds.toSet()
+
+        // Fork: sticky plan. The fresh radio churns every run, so previously downloaded tracks fall
+        // out of it through no fault of their own — dropping them from the plan is exactly how
+        // "downloaded N of M" used to fall on its own. Anything still fully on disk stays planned.
+        val stickyIds = previousPlan.filter { id ->
+            runCatching {
+                songRepository.getSongById(id).firstOrNull()?.downloadState == DownloadState.STATE_DOWNLOADED
+            }.getOrDefault(false)
+        }.toSet()
+
+        // Fork: rotation. A cached track leaves the plan only once it is spent (played) AND the
+        // fresh radio no longer lists it AND the user never claimed it (evictStale re-checks liked).
+        // Unplayed tracks that merely fell out of the radio stay cached — no mystery decrease.
+        val evicted = evictStale(previousPlan.filter { id -> id !in freshSet && isSpent(id) }.toSet())
+
+        // Fork: survivors first, then fresh tracks up to the user's count. Survivors are already on
+        // disk, so they never consume the count — the count limits NEW downloads only.
+        val survivors = (stickyIds - evicted).toList()
+        val newPlan = survivors + freshIds.filter { it !in survivors }.take((trackCount - survivors.size).coerceAtLeast(0))
+
         val queued = mutableSetOf<String>()
-        // Fork: the whole plan, not just the new downloads — the tab shows "downloaded N of M" and M
-        // is how many tracks this run decided the mix should consist of.
-        val planned = mutableListOf<String>()
-        var budget = trackCount
-
-        for (track in tracks) {
-            // Fork: the plan itself is capped at the user's count. It used to break on the download
-            // budget only, so every already-downloaded track the loop skipped still grew the plan —
-            // "downloaded N of M" showed the whole radio instead of the chosen count.
-            if (planned.size >= trackCount) break
-            planned.add(track.videoId)
-            val entity = songRepository.getSongById(track.videoId).firstOrNull()
-            val isDownloaded = entity?.downloadState == DownloadState.STATE_DOWNLOADED
-            val isSpent = isDownloaded && (entity?.totalPlayTime ?: 0L) > 0L
-
-            if (entity == null) {
-                songRepository.insertSong(track.toSongEntity()).firstOrNull()
+        var skipped = 0
+        for (videoId in newPlan) {
+            if (runCatching {
+                songRepository.getSongById(videoId).firstOrNull()?.downloadState == DownloadState.STATE_DOWNLOADED
+            }.getOrDefault(false)) continue
+            val track = tracks.firstOrNull { it.videoId == videoId } ?: continue
+            if (runCatching { songRepository.getSongById(videoId).firstOrNull() }.getOrNull() == null) {
+                runCatching { songRepository.insertSong(track.toSongEntity()).firstOrNull() }
             }
-
-            if (isDownloaded) {
-                // Already offline: it costs no budget, but a track that has been played is spent
-                // and does not count towards the target either — the next track takes its place.
-                if (isSpent) budget++
-                continue
+            // Fork: one bad track must not kill the run — skip it and cache the rest. An unguarded
+            // throw here used to abort the whole worker before CACHED_IDS was written, and the
+            // retry loop then replayed the same failure: the "frozen" cache.
+            try {
+                downloadHandler.downloadTrack(
+                    videoId = track.videoId,
+                    title = track.title,
+                    thumbnail = track.thumbnails?.lastOrNull()?.url.orEmpty(),
+                )
+                queued.add(track.videoId)
+            } catch (e: Exception) {
+                Logger.e(TAG, "Skipping uncacheable track ${track.videoId}: ${e.message}")
+                skipped++
             }
-
-            downloadHandler.downloadTrack(
-                videoId = track.videoId,
-                title = track.title,
-                thumbnail = track.thumbnails?.lastOrNull()?.url.orEmpty(),
-            )
-            queued.add(track.videoId)
-            budget--
         }
 
-        evictStale(previousPlan - planned.toSet())
-
+        // Fork: always persisted, even partial — the tab counts from this plan, and a run that
+        // downloaded nothing new still did its rotation work above.
         dataStoreManager.putString(MyMixPrefs.LAST_CACHE_AT, Clock.System.now().toEpochMilliseconds().toString())
-        dataStoreManager.putString(MyMixPrefs.CACHED_IDS, planned.joinToString(","))
-        Logger.w(TAG, "Queued ${queued.size} download(s) of ${planned.size} planned")
+        dataStoreManager.putString(MyMixPrefs.CACHED_IDS, newPlan.joinToString(","))
+        Logger.w(TAG, "Queued ${queued.size}, skipped $skipped, planned ${newPlan.size}")
     }
 
     /**
@@ -142,11 +154,11 @@ class MyMixCacheWorker(
      * offline the local signals still guard). Only fully downloaded rows are touched; anything
      * mid-download is left alone.
      */
-    private suspend fun evictStale(staleIds: Set<String>) {
-        if (staleIds.isEmpty()) return
+    private suspend fun evictStale(staleIds: Set<String>): Set<String> {
+        if (staleIds.isEmpty()) return emptySet()
         val candidates = songRepository.getSongsByListVideoId(staleIds.toList()).first()
             .filter { it.downloadState == DownloadState.STATE_DOWNLOADED }
-        if (candidates.isEmpty()) return
+        if (candidates.isEmpty()) return emptySet()
         val likedIds = runCatching { songRepository.getLikedSongs().first().map { it.videoId }.toSet() }
             .getOrDefault(emptySet())
         val youTubeLikedIds = runCatching {
@@ -156,17 +168,28 @@ class MyMixCacheWorker(
             ).first() as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)
                 ?.data?.first?.tracks.orEmpty().map { it.videoId }.toSet()
         }.getOrDefault(emptySet())
-        var evicted = 0
+        val evicted = mutableSetOf<String>()
         for (entity in candidates) {
             val id = entity.videoId
             if (entity.liked || id in likedIds || id in youTubeLikedIds) continue
             runCatching {
                 downloadHandler.removeDownload(id)
                 songRepository.updateDownloadState(id, DownloadState.STATE_NOT_DOWNLOADED)
-                evicted++
+                evicted.add(id)
             }
         }
-        Logger.w(TAG, "Evicted $evicted stale download(s) of ${candidates.size} candidate(s)")
+        Logger.w(TAG, "Evicted ${evicted.size} stale download(s) of ${candidates.size} candidate(s)")
+        return evicted
+    }
+
+    /**
+     * Fork: a cached track counts as spent once it has been played at all. Only spent tracks
+     * rotate out of a sticky plan — an unplayed track that merely fell out of the fresh radio
+     * stays cached, so the counter cannot drop "from nothing".
+     */
+    private suspend fun isSpent(videoId: String): Boolean {
+        val entity = runCatching { songRepository.getSongById(videoId).firstOrNull() }.getOrNull()
+        return entity?.downloadState == DownloadState.STATE_DOWNLOADED && entity.totalPlayTime > 0
     }
 
     private suspend fun isDue(intervalDays: Int): Boolean {

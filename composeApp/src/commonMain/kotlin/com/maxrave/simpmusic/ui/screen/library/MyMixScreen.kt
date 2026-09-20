@@ -75,6 +75,7 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.manager.DataStoreManager
+import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.domain.mediaservice.handler.PlaylistType as QueuePlaylistType
 import com.maxrave.domain.mediaservice.handler.QueueData
@@ -99,6 +100,7 @@ import com.maxrave.simpmusic.viewModel.LibraryViewModel
 import com.maxrave.simpmusic.viewModel.SharedViewModel
 import com.maxrave.simpmusic.viewModel.UIEvent
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -544,20 +546,33 @@ fun MyMixScreen(
     // while this tab stays composed, which used to freeze the page offline until another tab was
     // opened. So while the shelf is empty (and the manual switch is off) the tab retries the fetch
     // itself — the first success latches and the page leaves offline mode on its own, no matter
-    // what the callback said. Backoff 15 s ×3 then 60 s so a truly dead network doesn't hammer it.
+    // what the callback said. Entry burst first: one probe per second for a minute, then one
+    // probe a minute so a truly dead network isn't hammered.
     var probeSucceeded by remember { mutableStateOf(false) }
+    var fetchInFlight by remember { mutableStateOf(false) }
     LaunchedEffect(manualOffline) {
         if (manualOffline) return@LaunchedEffect
-        var attempts = 0
-        while (true) {
-            if (viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
-                runCatching { viewModel.getYouTubeMixedForYou() }
-                attempts++
-            } else {
+        suspend fun probeOnce() {
+            if (!viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
                 probeSucceeded = true
-                return@LaunchedEffect
+                return
             }
-            delay(if (attempts < 3) 15_000 else 60_000)
+            if (fetchInFlight) return
+            fetchInFlight = true
+            try {
+                runCatching { viewModel.getYouTubeMixedForYou() }
+            } finally {
+                fetchInFlight = false
+            }
+        }
+        repeat(60) {
+            probeOnce()
+            if (probeSucceeded) return@LaunchedEffect
+            delay(1_000)
+        }
+        while (!probeSucceeded) {
+            probeOnce()
+            if (!probeSucceeded) delay(60_000)
         }
     }
     // Fork: offline is claimed only when there is nothing to show AND no fetch ever succeeded —
@@ -915,12 +930,16 @@ fun MyMixScreen(
                                 contentDescription = selectedMix?.title,
                             )
                             Text(
-                                text = if (offline) {
-                                    stringResource(Res.string.my_mix_you_are_offline)
-                                } else if (isLikesSelected) {
+                                // Fork: the mix has exactly two states — online or offline. While the
+                                // shelf is still being probed there is no third "loading" title: with
+                                // nothing selected yet the hero already reads as offline and the button
+                                // below already plays the cache.
+                                text = if (isLikesSelected) {
                                     stringResource(Res.string.my_mix_no_mood)
+                                } else if (offline || selectedMix == null) {
+                                    stringResource(Res.string.my_mix_you_are_offline)
                                 } else {
-                                    selectedMix?.title ?: stringResource(Res.string.my_mix_subtitle)
+                                    selectedMix.title
                                 },
                                 // Fork: the title sits on the bright field itself, so it carries its own
                                 // soft shadow instead of a fullscreen darkening behind it.
@@ -947,14 +966,16 @@ fun MyMixScreen(
                             }
                             FilledIconButton(
                                 onClick = {
+                                    // Fork: same two states as the title above — a hero with no mix
+                                    // selected yet plays the offline cache, never sits disabled.
                                     when {
-                                        offline -> playOffline()
                                         isLikesSelected -> playLikes()
-                                        else -> selectedMix?.let { playMix(it) }
+                                        offline || selectedMix == null -> playOffline()
+                                        else -> playMix(selectedMix)
                                     }
                                 },
                                 modifier = Modifier.size(84.dp),
-                                enabled = !isPreparing && (offline || isLikesSelected || selectedMix != null),
+                                enabled = !isPreparing,
                                 colors =
                                     IconButtonDefaults.filledIconButtonColors(
                                         containerColor = Color.White,
@@ -1011,7 +1032,9 @@ fun MyMixScreen(
                                 }
                                 // Fork: the personal mix leads the row and is drawn differently, because
                                 // it is the one entry that follows the listener rather than a theme.
-                                superMix?.let { mix ->
+                                // Online only — offline the row above already shows the Supermix pill
+                                // that plays the autocache, and a second identical pill is a duplicate.
+                                if (!offline) superMix?.let { mix ->
                                     item(key = "supermix") {
                                         MoodPill(
                                             label = stringResource(Res.string.my_mix_supermix),
@@ -1565,10 +1588,15 @@ private fun MyMixCacheCard(
     }
 
     // Fork: "downloaded N of M" is answered from the cache worker's own plan (CACHED_IDS) crossed with
-    // the songs actually on disk, so it cannot drift from what the worker decided.
+    // the songs actually on disk, so it cannot drift from what the worker decided — and it also
+    // watches the live download states, so the count ticks up while a batch is still downloading
+    // instead of only after the worker rewrites the plan.
+    val downloadHandler: DownloadHandler = koinInject()
     LaunchedEffect(Unit) {
-        dataStoreManager.getString(MyMixPrefs.CACHED_IDS)
-            .distinctUntilChanged()
+        combine(
+            dataStoreManager.getString(MyMixPrefs.CACHED_IDS).distinctUntilChanged(),
+            downloadHandler.downloadTask,
+        ) { raw, _ -> raw }
             .collect { raw ->
                 val ids = raw.orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }
                 plannedCount = ids.size

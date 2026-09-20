@@ -153,6 +153,11 @@ class PlaylistViewModel(
         id: String,
         state: Int,
     ) {
+        // Fork: the downloads collector above re-fires on every track transition of a batch, and it
+        // calls this once per downloading track per emission — without the guard every one of those
+        // is a Room write that invalidates the playlist table and recomposes its screens. States are
+        // few and sticky, so writing only on change collapses the whole storm into two writes.
+        if (_playlistEntity.value?.downloadState == state) return
         viewModelScope.launch {
             playlistRepository.updatePlaylistDownloadState(id, state)
             delay(500)
