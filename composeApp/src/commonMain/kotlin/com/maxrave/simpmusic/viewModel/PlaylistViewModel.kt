@@ -13,6 +13,7 @@ import com.maxrave.domain.data.model.browse.playlist.Author
 import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
 import com.maxrave.domain.data.model.browse.playlist.PlaylistState
 import com.maxrave.domain.extension.now
+import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.mediaservice.handler.PlaylistType
 import com.maxrave.domain.mediaservice.handler.QueueData
@@ -31,6 +32,7 @@ import com.maxrave.simpmusic.viewModel.PlaylistUIState.Error
 import com.maxrave.simpmusic.viewModel.PlaylistUIState.Loading
 import com.maxrave.simpmusic.viewModel.PlaylistUIState.Success
 import com.maxrave.simpmusic.viewModel.base.BaseViewModel
+import com.maxrave.simpmusic.ui.screen.library.MyMixPrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -68,6 +70,7 @@ class PlaylistViewModel(
     private val playlistRepository: PlaylistRepository,
 ) : BaseViewModel() {
     val downloadUtils: DownloadHandler by inject<DownloadHandler>()
+    private val dataStoreManager: DataStoreManager by inject()
     private var _uiState = MutableStateFlow<PlaylistUIState>(Loading)
     val uiState: StateFlow<PlaylistUIState> = _uiState
 
@@ -190,8 +193,9 @@ class PlaylistViewModel(
 
     /**
      * Fork: the tracks the device already holds for a playlist — the cached track list plus, for
-     * the YouTube "Liked Music" playlist, every liked and downloaded song. Feeds the screen before
-     * (and instead of) a network response that came back empty or geo-blocked.
+     * the YouTube "Liked Music" playlist, every liked song and every download that is also liked
+     * or was seen in a persisted YouTube-Liked fetch. Feeds the screen before (and instead of)
+     * a network response that came back empty or geo-blocked.
      */
     private suspend fun localTracksFor(
         id: String,
@@ -206,8 +210,23 @@ class PlaylistViewModel(
             }
         val extras =
             if (id == LIKED_PLAYLIST_ID) {
-                songRepository.getLikedSongs().firstOrNull().orEmpty() +
+                // Fork: the Liked list must contain ONLY tracks from the YouTube
+                // Liked playlist — never the whole downloaded library (mix cache
+                // and other playlists included). Extras are the locally liked
+                // songs plus downloads that are also liked or were seen in a
+                // persisted YouTube-Liked fetch (for VPN cases when the live
+                // fetch of the account list fails).
+                val liked = songRepository.getLikedSongs().firstOrNull().orEmpty()
+                val likedIds = liked.map { it.videoId }.toSet()
+                val ytLikedIds =
+                    runCatching {
+                        dataStoreManager.getString(MyMixPrefs.YT_LIKED_IDS).firstOrNull().orEmpty()
+                            .split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                    }.getOrDefault(emptySet())
+                val downloaded =
                     songRepository.getDownloadedSongs().firstOrNull().orEmpty()
+                        .filter { it.videoId in likedIds || it.videoId in ytLikedIds }
+                liked + downloaded
             } else {
                 emptyList()
             }
