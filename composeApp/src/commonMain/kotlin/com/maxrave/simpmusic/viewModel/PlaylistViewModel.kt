@@ -461,14 +461,24 @@ class PlaylistViewModel(
                                 ),
                         )
                     _tracksListState.value = ListState.LOADING
-                    playlistEntity.tracks?.let {
-                        songRepository
-                            .getSongsByListVideoId(it)
-                            .singleOrNull()
-                            ?.let { song ->
-                                _tracks.value = song.map { it.toTrack() }
-                            }
-                    }
+                    // Fork: never shrink the list to the cached snapshot alone. The
+                    // entity's track ids can be stale or partial (continuation never
+                    // fetched, rows never inserted), while loadLocalFirst above may
+                    // already hold liked/downloaded extras — mirror the online merge.
+                    val cachedIds = playlistEntity.tracks.orEmpty()
+                    val resolved =
+                        if (cachedIds.isNotEmpty()) {
+                            songRepository
+                                .getSongsByListVideoId(cachedIds)
+                                .singleOrNull()
+                                .orEmpty()
+                                .map { it.toTrack() }
+                        } else {
+                            emptyList()
+                        }
+                    val resolvedIds = resolved.map { it.videoId }.toSet()
+                    val local = localTracksFor(id).filter { it.videoId !in resolvedIds }
+                    _tracks.value = resolved + local
                     _tracksListState.value = ListState.PAGINATION_EXHAUST
                     if (playlistEntity.downloadState != STATE_DOWNLOADED) {
                         checkDownloadedPlaylist =
