@@ -154,6 +154,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.repository.SongRepository
+import com.maxrave.domain.utils.YouTubeLikeStatus
 import com.maxrave.domain.utils.connectArtists
 import com.maxrave.domain.utils.toArrayListTrack
 import com.maxrave.simpmusic.extension.formatDuration
@@ -613,8 +614,11 @@ fun MyMixScreen(
     LaunchedEffect(playingVideoId, controllerState.isLiked) {
         youTubeLiked = controllerState.isLiked
         playingVideoId?.let { videoId ->
-            youTubeLiked = runCatching { songRepository.getLikeStatus(videoId).first() }
-                .getOrDefault(youTubeLiked)
+            // Fork: upstream's getLikeStatus returns the YouTube enum now; map it to the
+            // Boolean this screen's icon state expects.
+            youTubeLiked =
+                runCatching { songRepository.getLikeStatus(videoId).first() }
+                    .getOrDefault(YouTubeLikeStatus.INDIFFERENT) == YouTubeLikeStatus.LIKE
         }
     }
 
@@ -960,6 +964,7 @@ fun MyMixScreen(
                     val nowSong = nowPlaying?.songEntity
                     if (nowSong != null && !isPreparing) {
                         MyMixNowPlaying(
+                            navController = navController,
                             song = nowSong,
                             isPlaying = isPlayingNow,
                             isLiked = youTubeLiked,
@@ -1363,6 +1368,7 @@ private fun MoodGridTile(
  */
 @Composable
 private fun MyMixNowPlaying(
+    navController: NavController,
     song: SongEntity,
     isPlaying: Boolean,
     isLiked: Boolean,
@@ -1526,7 +1532,13 @@ private fun MyMixNowPlaying(
                 )
             }
             if (showQueue) {
-                QueueBottomSheet(onDismiss = { showQueue = false })
+                QueueBottomSheet(
+                    onDismiss = { showQueue = false },
+                    navController = navController,
+                    onNavigateToOtherScreen = {
+                        showQueue = false
+                    },
+                )
             }
         }
 

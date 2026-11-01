@@ -7,6 +7,8 @@ import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.LocalPlaylistEntity
 import com.maxrave.domain.data.entities.PlaylistEntity
 import com.maxrave.domain.data.entities.SongEntity
+import com.maxrave.domain.data.model.library.LibraryCollectionPreview
+import com.maxrave.domain.data.model.library.LibraryOverview
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.data.type.ChartItem
 import com.maxrave.domain.data.type.MonthlyRecapItem
@@ -16,6 +18,7 @@ import com.maxrave.domain.extension.now
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.repository.AlbumRepository
 import com.maxrave.domain.repository.AnalyticsRepository
+import com.maxrave.domain.repository.CacheRepository
 import com.maxrave.domain.repository.CommonRepository
 import com.maxrave.domain.repository.LocalPlaylistRepository
 import com.maxrave.domain.repository.PlaylistRepository
@@ -65,9 +68,13 @@ class LibraryViewModel(
     private val localPlaylistRepository: LocalPlaylistRepository,
     private val albumRepository: AlbumRepository,
     private val podcastRepository: PodcastRepository,
+    private val cacheRepository: CacheRepository,
 ) : BaseViewModel() {
     private val _currentScreen: MutableStateFlow<LibraryChipType> = MutableStateFlow(LibraryChipType.YOUR_LIBRARY)
     val currentScreen: StateFlow<LibraryChipType> get() = _currentScreen.asStateFlow()
+
+    // A chip was picked (a tap, or a deep link) before the one saved last time finished loading.
+    private var screenChosen = false
     private val _recentlyAdded: MutableStateFlow<LocalResource<List<RecentlyType>>> =
         MutableStateFlow(LocalResource.Loading())
     val recentlyAdded: StateFlow<LocalResource<List<RecentlyType>>> get() = _recentlyAdded.asStateFlow()
@@ -135,6 +142,16 @@ class LibraryViewModel(
     fun setMyMixFieldColors(primaryArgb: Long, secondaryArgb: Long) {
         _myMixFieldColors.value = primaryArgb to secondaryArgb
     }
+    /** Counts and newest artwork for the four Your library cards; null until the first read lands. */
+    private val _libraryOverview: MutableStateFlow<LibraryOverview?> = MutableStateFlow(null)
+    val libraryOverview: StateFlow<LibraryOverview?> get() = _libraryOverview.asStateFlow()
+
+    /**
+     * The Cached card's count and newest artwork. Kept apart from [libraryOverview] because the
+     * player cache is no table to observe: the screen asks again each time it is shown.
+     */
+    private val _cachedPreview: MutableStateFlow<LibraryCollectionPreview?> = MutableStateFlow(null)
+    val cachedPreview: StateFlow<LibraryCollectionPreview?> get() = _cachedPreview.asStateFlow()
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val youtubeLoggedIn = dataStoreManager.loggedIn.mapLatest { it == DataStoreManager.TRUE }
@@ -150,20 +167,39 @@ class LibraryViewModel(
 
     init {
         viewModelScope.launch {
-            dataStoreManager.getString("library_current_screen").first()?.let { chipType ->
-                LibraryChipType.fromStringValue(chipType)?.let {
-                    _currentScreen.value = it
+            val currentScreenJob =
+                launch {
+                    dataStoreManager.getString("library_current_screen").first()?.let { chipType ->
+                        LibraryChipType.fromStringValue(chipType)?.let {
+                            // The chip picked meanwhile wins over the one saved last time.
+                            if (!screenChosen) _currentScreen.value = it
+                        }
+                    }
                 }
-            }
+            val cookieJob =
+                launch {
+                    dataStoreManager.cookie.distinctUntilChanged().collect {
+                        _accountThumbnail.value = dataStoreManager.getString("AccountThumbUrl").first().takeIf { !it.isNullOrEmpty() }
+                    }
+                }
+            currentScreenJob.join()
+            cookieJob.join()
         }
         viewModelScope.launch {
-            dataStoreManager.cookie.distinctUntilChanged().collect {
-                _accountThumbnail.value = dataStoreManager.getString("AccountThumbUrl").first().takeIf { !it.isNullOrEmpty() }
-            }
+            commonRepository.getLibraryOverview().collect { _libraryOverview.value = it }
+        }
+    }
+
+    fun refreshCachedPreview() {
+        viewModelScope.launch {
+            val songs = loadCachedSongs(cacheRepository, songRepository)
+            // The same three the other cards fan out.
+            _cachedPreview.value = LibraryCollectionPreview(songs.size, songs.mapNotNull { it.thumbnails }.take(3))
         }
     }
 
     fun setCurrentScreen(chipType: LibraryChipType) {
+        screenChosen = true
         _currentScreen.value = chipType
         viewModelScope.launch {
             dataStoreManager.putString("library_current_screen", chipType.toStringValue())

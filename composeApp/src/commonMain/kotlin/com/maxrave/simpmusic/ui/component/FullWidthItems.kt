@@ -77,6 +77,7 @@ import com.maxrave.domain.data.type.ArtistType
 import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.connectArtists
+import com.maxrave.domain.utils.isLive
 import com.maxrave.domain.utils.toListName
 import com.maxrave.simpmusic.ui.icon.Add
 import com.maxrave.simpmusic.ui.icon.Check
@@ -86,11 +87,10 @@ import com.maxrave.simpmusic.ui.icon.MoreVert
 import com.maxrave.simpmusic.ui.icon.PushPin
 import com.maxrave.simpmusic.ui.icon.QueueMusic
 import com.maxrave.simpmusic.ui.icon.SimpIcons
+import com.maxrave.simpmusic.ui.icon.SkipNext
 import com.maxrave.simpmusic.ui.theme.LocalForceDarkText
 import com.maxrave.simpmusic.ui.theme.seed
 import com.maxrave.simpmusic.ui.theme.typo
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
@@ -99,6 +99,7 @@ import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.add_to_queue
 import simpmusic.composeapp.generated.resources.album
 import simpmusic.composeapp.generated.resources.artists
+import simpmusic.composeapp.generated.resources.play_next
 import simpmusic.composeapp.generated.resources.playlist
 import simpmusic.composeapp.generated.resources.podcasts
 import simpmusic.composeapp.generated.resources.radio
@@ -138,7 +139,18 @@ fun SongFullWidthItems(
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
     val itemVideoId = track?.videoId ?: songEntity?.videoId ?: ""
-    val resolvedDownloadState = downloadState ?: songEntity?.downloadState ?: DownloadState.STATE_NOT_DOWNLOADED
+    val songRepository: SongRepository = koinInject<SongRepository>()
+    val storedSong by songRepository
+        .getSongAsFlow(itemVideoId)
+        .collectAsState(initial = null)
+    // Fork: an explicitly passed downloadState wins (some lists already know), then the
+    // stored row - which playback keeps current - then the list's own model.
+    // The list's own model says what its source said; the stored row adds what playback learned
+    // since, which is the only way a queue row is marked - the queue response shows no LIVE chip.
+    val isLive = track?.isLive == true || songEntity?.isLive == true || storedSong?.isLive == true
+    val resolvedDownloadState =
+        downloadState ?: storedSong?.downloadState ?: songEntity?.downloadState
+        ?: DownloadState.STATE_NOT_DOWNLOADED
     val offsetX = remember { Animatable(initialValue = 0f) }
 
     Box(
@@ -149,6 +161,9 @@ fun SongFullWidthItems(
             offsetX.value >= maxOffset / 2,
         ) { shouldShowAddToQueue ->
             if (shouldShowAddToQueue) {
+                // Where Add to queue is blocked the swipe plays the song next instead
+                // (SharedViewModel.addListToQueue), so the icon shows what will happen.
+                val playsNext = rememberAddToQueueBlock() != null
                 Box(
                     modifier =
                         Modifier
@@ -160,8 +175,9 @@ fun SongFullWidthItems(
                 ) {
                     Icon(
                         tint = contentColor,
-                        imageVector = SimpIcons.QueueMusic,
-                        contentDescription = stringResource(Res.string.add_to_queue),
+                        imageVector = if (playsNext) SimpIcons.SkipNext else SimpIcons.QueueMusic,
+                        contentDescription =
+                            stringResource(if (playsNext) Res.string.play_next else Res.string.add_to_queue),
                     )
                 }
             }
@@ -344,6 +360,8 @@ fun SongFullWidthItems(
                                 Spacer(modifier = Modifier.width(5.dp))
                             }
                         }
+                        // Ahead of the artist, as on Home's cards.
+                        if (isLive) LiveBadge(modifier = Modifier.padding(end = 6.dp))
                         Text(
                             text =
                                 (
@@ -466,23 +484,26 @@ fun SuggestItems(
                                 animationMode = MarqueeAnimationMode.Immediately,
                             ).focusable(),
                 )
-                Text(
-                    text =
-                        (
-                            track.artists?.toListName()?.connectArtists()
-                        ) ?: "",
-                    style = typo().bodySmall,
-                    maxLines = 1,
-                    color = subtitleColor,
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .wrapContentHeight(align = Alignment.CenterVertically)
-                            .basicMarquee(
-                                iterations = Int.MAX_VALUE,
-                                animationMode = MarqueeAnimationMode.Immediately,
-                            ).focusable(),
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (track.isLive) LiveBadge(modifier = Modifier.padding(end = 6.dp))
+                    Text(
+                        text =
+                            (
+                                track.artists?.toListName()?.connectArtists()
+                            ) ?: "",
+                        style = typo().bodySmall,
+                        maxLines = 1,
+                        color = subtitleColor,
+                        modifier =
+                            Modifier
+                                .fillMaxWidth()
+                                .wrapContentHeight(align = Alignment.CenterVertically)
+                                .basicMarquee(
+                                    iterations = Int.MAX_VALUE,
+                                    animationMode = MarqueeAnimationMode.Immediately,
+                                ).focusable(),
+                    )
+                }
             }
             RippleIconButton(
                 imageVector = SimpIcons.Add,

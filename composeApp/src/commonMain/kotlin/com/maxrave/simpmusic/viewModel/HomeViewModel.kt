@@ -85,6 +85,10 @@ class HomeViewModel(
     private val _mainHomeThumbnail: MutableStateFlow<String?> = MutableStateFlow(null)
     val mainHomeThumbnail: StateFlow<String?> = _mainHomeThumbnail
 
+    // The page background image YouTube sends with Home, null when it sends none.
+    private val _homeBackground: MutableStateFlow<String?> = MutableStateFlow(null)
+    val homeBackground: StateFlow<String?> = _homeBackground
+
     init {
         // PERF FIX: moved cookie/alert check off the main thread — runBlocking here was blocking
         // ViewModel construction (and therefore the first frame) until DataStore I/O completed.
@@ -214,6 +218,7 @@ class HomeViewModel(
                         is Resource.Success -> {
                             _continuation.value = home.data?.first
                             _homeItemList.value = home.data?.second ?: listOf()
+                            _homeBackground.value = home.data?.third
                         }
 
                         else -> {
@@ -279,6 +284,11 @@ class HomeViewModel(
                     loading.value = false
                 }
             }
+    }
+
+    /** A shelf's "Play all": YouTube's own finite queue of that shelf's songs. */
+    fun playAll(item: HomeItem) {
+        item.playAllEndpoint?.let { playFromEndpoint(it, item.title) }
     }
 
     fun getContinueHomeItem(continuation: String?) {

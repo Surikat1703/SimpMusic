@@ -49,6 +49,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import com.maxrave.simpmusic.extension.barBlurStyle
 import com.maxrave.simpmusic.ui.component.DownloadingIndicator
 import com.maxrave.simpmusic.ui.icon.Search
 import com.maxrave.simpmusic.ui.icon.Close
@@ -124,7 +125,7 @@ import com.maxrave.simpmusic.extension.artworkScrimBrush
 import com.maxrave.simpmusic.extension.displayNameRes
 import com.maxrave.simpmusic.extension.getColorFromPalette
 import com.maxrave.simpmusic.extension.getScreenSizeInfo
-import com.maxrave.simpmusic.extension.toImmersiveBackground
+import com.maxrave.simpmusic.extension.rememberPaletteColor
 import com.maxrave.simpmusic.getPlatform
 import com.maxrave.simpmusic.ui.component.SearchBarExit
 import com.maxrave.simpmusic.ui.component.SearchBarEnter
@@ -167,10 +168,9 @@ import com.maxrave.simpmusic.viewModel.LocalPlaylistViewModel
 import com.maxrave.simpmusic.viewModel.SharedViewModel
 import com.maxrave.simpmusic.viewModel.SongSelectionViewModel
 import com.maxrave.simpmusic.viewModel.UIEvent
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.HazeInput
+import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -215,7 +215,6 @@ private const val TAG = "LocalPlaylistScreen"
 @OptIn(
     ExperimentalMaterial3Api::class,
     ExperimentalCoroutinesApi::class,
-    ExperimentalHazeMaterialsApi::class,
 )
 @Composable
 fun LocalPlaylistScreen(
@@ -368,7 +367,7 @@ fun LocalPlaylistScreen(
         shouldHideTopBar = !firstItemVisible
     }
     val paletteState = rememberPaletteState()
-    val hazeState = rememberHazeState(blurEnabled = true)
+    val hazeState = rememberHazeState()
     var bitmap by remember {
         mutableStateOf<ImageBitmap?>(null)
     }
@@ -408,22 +407,15 @@ fun LocalPlaylistScreen(
     // AsyncImage shows the title placeholder and onSuccess never fires, so the palette stays
     // null; in that case we fall back to the SAME deterministic title gradient the placeholder
     // draws, so the background still matches the thumbnail. Darkened slightly for readability.
-    val mutedPaletteBg =
-        run {
-            val palette = paletteState.palette
-            if (palette != null) {
-                palette.toImmersiveBackground()
-            } else {
-                val titleColors = playlistTitleGradient(uiState.title)
-                val base =
-                    if (titleColors.size >= 2) {
-                        lerp(titleColors[0], titleColors[1], 0.5f)
-                    } else {
-                        titleColors.firstOrNull() ?: Color.Black
-                    }
-                lerp(base, Color.Black, 0.3f)
-            }
+    // Held and faded (see UIExt.rememberPaletteColor).
+    val titleColors = playlistTitleGradient(uiState.title)
+    val titleBase =
+        if (titleColors.size >= 2) {
+            lerp(titleColors[0], titleColors[1], 0.5f)
+        } else {
+            titleColors.firstOrNull() ?: Color.Black
         }
+    val mutedPaletteBg = rememberPaletteColor(paletteState.palette, fallback = lerp(titleBase, Color.Black, 0.3f))
 
     // Loading dialog
     val showLoadingDialog by viewModel.showLoadingDialog.collectAsStateWithLifecycle()
@@ -548,7 +540,7 @@ fun LocalPlaylistScreen(
                                                 .memoryCachePolicy(CachePolicy.ENABLED)
                                                 .diskCacheKey(uiState.thumbnail)
                                                 .memoryCacheKey(uiState.thumbnail)
-                                                .crossfade(false)
+                                                .crossfade(550)
                                                 .build(),
                                         placeholder = painterPlaylistThumbnail(uiState.title, style = typo().labelMedium, 250.dp to 250.dp),
                                         error = painterPlaylistThumbnail(uiState.title, style = typo().labelMedium, 250.dp to 250.dp),
@@ -747,7 +739,7 @@ fun LocalPlaylistScreen(
                                                     .memoryCachePolicy(CachePolicy.ENABLED)
                                                     .diskCacheKey(uiState.thumbnail)
                                                     .memoryCacheKey(uiState.thumbnail)
-                                                    .crossfade(false)
+                                                    .crossfade(550)
                                                     .build(),
                                             placeholder = painterPlaylistThumbnail(uiState.title, style = typo().labelMedium, 250.dp to 250.dp),
                                             error = painterPlaylistThumbnail(uiState.title, style = typo().labelMedium, 250.dp to 250.dp),
@@ -1450,12 +1442,7 @@ fun LocalPlaylistScreen(
             },
             onOpenActions = { showSelectionSheet = true },
             modifier =
-                Modifier.hazeEffect(hazeState) {
-                    blurEnabled = true
-                    blurRadius = 24.dp
-                    backgroundColor = mutedPaletteBg
-                    tints = listOf(HazeTint(mutedPaletteBg.copy(alpha = 0.55f)))
-                },
+                Modifier.hazeBlur(HazeInput.Sources(hazeState), barBlurStyle(mutedPaletteBg, 0.55f)),
         )
     }
     if (showSelectionSheet) {
@@ -1628,12 +1615,7 @@ fun LocalPlaylistScreen(
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .hazeEffect(hazeState) {
-                        blurEnabled = true
-                        blurRadius = 24.dp
-                        backgroundColor = mutedPaletteBg
-                        tints = listOf(HazeTint(mutedPaletteBg.copy(alpha = 0.55f)))
-                    },
+                    .hazeBlur(HazeInput.Sources(hazeState), barBlurStyle(mutedPaletteBg, 0.55f)),
             ) {
                 Row(
                     modifier =
@@ -1757,12 +1739,7 @@ fun LocalPlaylistScreen(
                     containerColor = Color.Transparent,
                 ),
             modifier =
-                Modifier.hazeEffect(hazeState) {
-                    blurEnabled = true
-                    blurRadius = 24.dp
-                    backgroundColor = mutedPaletteBg
-                    tints = listOf(HazeTint(mutedPaletteBg.copy(alpha = 0.55f)))
-                },
+                Modifier.hazeBlur(HazeInput.Sources(hazeState), barBlurStyle(mutedPaletteBg, 0.55f)),
         )
     }
 }

@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CardDefaults
@@ -81,18 +82,23 @@ import com.maxrave.simpmusic.Platform
 import com.maxrave.simpmusic.expect.ui.MediaPlayerView
 import com.maxrave.simpmusic.expect.ui.MediaPlayerViewWithSubtitle
 import com.maxrave.simpmusic.expect.ui.toImageBitmap
+import com.maxrave.simpmusic.extension.LeftToRight
 import com.maxrave.simpmusic.extension.parseTimestampToMilliseconds
+import com.maxrave.simpmusic.extension.mouseDragScroll
 import com.maxrave.simpmusic.extension.smoothScrimBrush
 import com.maxrave.simpmusic.getPlatform
 import com.maxrave.simpmusic.ui.component.AIBadge
 import com.maxrave.simpmusic.ui.component.DescriptionView
 import com.maxrave.simpmusic.ui.component.ExplicitBadge
 import com.maxrave.simpmusic.ui.component.HeartCheckBox
+import com.maxrave.simpmusic.ui.component.LyricsOffsetBar
 import com.maxrave.simpmusic.ui.component.LyricsView
 import com.maxrave.simpmusic.ui.component.PlayPauseButton
+import com.maxrave.simpmusic.ui.component.hasTiming
 import com.maxrave.simpmusic.ui.component.lyrics.ShareLyricsSheet
 import com.maxrave.simpmusic.ui.component.lyrics.toShareLyricsLines
 import com.maxrave.simpmusic.ui.component.rememberHolderPainter
+import com.maxrave.simpmusic.ui.icon.AvTimer
 import com.maxrave.simpmusic.ui.icon.Forward5
 import com.maxrave.simpmusic.ui.icon.Fullscreen
 import com.maxrave.simpmusic.ui.icon.Replay5
@@ -113,6 +119,7 @@ import simpmusic.composeapp.generated.resources.description
 import simpmusic.composeapp.generated.resources.like_and_dislike
 import simpmusic.composeapp.generated.resources.line_synced
 import simpmusic.composeapp.generated.resources.lyrics
+import simpmusic.composeapp.generated.resources.lyrics_offset
 import simpmusic.composeapp.generated.resources.lyrics_provider_betterlyrics
 import simpmusic.composeapp.generated.resources.lyrics_provider_lrc
 import simpmusic.composeapp.generated.resources.lyrics_provider_simpmusic
@@ -132,6 +139,14 @@ private val ExpressiveCardShape = RoundedCornerShape(20.dp)
 
 // Artwork card corner radius — the signature shape of the "Tonal pills" design.
 private val ArtworkCardShape = RoundedCornerShape(28.dp)
+
+/**
+ * Width / height of the slot the artwork card takes in the column: the video's own shape while
+ * one plays, capped at square so a tall video is never taller than a song's card. The one
+ * expression both the drawn card and the measuring spacer in `NowPlayingContentM3Expressive` use.
+ */
+internal fun NowPlayingContentState.expressiveCardSlotRatio(): Float =
+    if (screenData.isVideo && shouldShowVideo) maxOf(videoAspectRatio, 1f) else 1f
 
 /**
  * One pager page: a rounded square card (width = screen − 40dp, 1:1, 28dp corners).
@@ -158,11 +173,14 @@ internal fun ExpressiveArtworkCardPage(
     val colorScheme = MaterialTheme.colorScheme
     val pageTrack = state.artworkQueue.getOrNull(page)
     val isCurrentArtworkPage = page == state.currentOrderIndex
-    val pageHasCanvas = isCurrentArtworkPage && state.screenData.canvasData != null
-    // While a video plays, the card frame itself shrinks to the video's 16:9 — no letterbox
-    // bands inside a square card. Every page shares the ratio so the pager height matches the
-    // measuring spacer in the content column (which uses the same condition).
-    val cardAspectRatio = if (state.screenData.isVideo && state.shouldShowVideo) 16f / 9 else 1f
+    // A canvas that fills the page; Apple Music's animated artwork is drawn separately, last.
+    val pageHasCanvas = isCurrentArtworkPage && state.screenData.fullscreenCanvas() != null
+    val pageAnimatedArtwork = state.screenData.canvasData?.takeIf { isCurrentArtworkPage && it.isAnimatedArtwork() }
+    // While a video plays, the card itself takes the video's shape — no letterbox bands inside a
+    // square card — fitted into a slot no taller than the square card a song gets, so a tall video
+    // narrows the card instead of pushing the page past the fold. Every page shares the slot so the
+    // pager height matches the measuring spacer in the content column (expressiveCardSlotRatio).
+    val cardAspectRatio = if (state.screenData.isVideo && state.shouldShowVideo) state.videoAspectRatio else 1f
 
     Box(
         contentAlignment = Alignment.Center,
@@ -285,6 +303,8 @@ internal fun ExpressiveArtworkCardPage(
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp)
                         .alpha(if (pageHasCanvas) 0f else 1f)
+                        .aspectRatio(state.expressiveCardSlotRatio())
+                        .wrapContentSize()
                         .aspectRatio(cardAspectRatio)
                         .clip(ArtworkCardShape)
                         .background(colorScheme.surfaceContainer),
@@ -350,11 +370,11 @@ internal fun ExpressiveArtworkCardPage(
                         var internalShowSubtitle by rememberSaveable {
                             mutableStateOf(true)
                         }
+                        // The card already has the video's shape, so this simply fills it.
                         Box(
                             modifier =
                                 Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(16f / 9)
+                                    .fillMaxSize()
                                     .background(Color.Black),
                         ) {
                             Box(Modifier.fillMaxSize()) {
@@ -414,59 +434,61 @@ internal fun ExpressiveArtworkCardPage(
                                                     tint = Color.White,
                                                 )
                                             }
-                                            Row(
-                                                Modifier
-                                                    .align(Alignment.Center)
-                                                    .fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceEvenly,
-                                            ) {
-                                                FilledTonalIconButton(
-                                                    colors =
-                                                        IconButtonDefaults.iconButtonColors().copy(
-                                                            containerColor = Color.Transparent,
-                                                        ),
-                                                    modifier =
-                                                        Modifier
-                                                            .size(48.dp)
-                                                            .aspectRatio(1f)
-                                                            .clip(CircleShape),
-                                                    onClick = {
-                                                        actions.onUIEvent(UIEvent.Backward)
-                                                    },
+                                            LeftToRight {
+                                                Row(
+                                                    Modifier
+                                                        .align(Alignment.Center)
+                                                        .fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceEvenly,
                                                 ) {
-                                                    Icon(
-                                                        imageVector = SimpIcons.Replay5,
-                                                        tint = Color.White,
-                                                        contentDescription = "",
+                                                    FilledTonalIconButton(
+                                                        colors =
+                                                            IconButtonDefaults.iconButtonColors().copy(
+                                                                containerColor = Color.Transparent,
+                                                            ),
                                                         modifier =
                                                             Modifier
-                                                                .size(36.dp)
-                                                                .alpha(0.8f),
-                                                    )
-                                                }
-                                                FilledTonalIconButton(
-                                                    colors =
-                                                        IconButtonDefaults.iconButtonColors().copy(
-                                                            containerColor = Color.Transparent,
-                                                        ),
-                                                    modifier =
-                                                        Modifier
-                                                            .size(48.dp)
-                                                            .aspectRatio(1f)
-                                                            .clip(CircleShape),
-                                                    onClick = {
-                                                        actions.onUIEvent(UIEvent.Forward)
-                                                    },
-                                                ) {
-                                                    Icon(
-                                                        imageVector = SimpIcons.Forward5,
-                                                        tint = Color.White,
-                                                        contentDescription = "",
+                                                                .size(48.dp)
+                                                                .aspectRatio(1f)
+                                                                .clip(CircleShape),
+                                                        onClick = {
+                                                            actions.onUIEvent(UIEvent.Backward)
+                                                        },
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = SimpIcons.Replay5,
+                                                            tint = Color.White,
+                                                            contentDescription = "",
+                                                            modifier =
+                                                                Modifier
+                                                                    .size(36.dp)
+                                                                    .alpha(0.8f),
+                                                        )
+                                                    }
+                                                    FilledTonalIconButton(
+                                                        colors =
+                                                            IconButtonDefaults.iconButtonColors().copy(
+                                                                containerColor = Color.Transparent,
+                                                            ),
                                                         modifier =
                                                             Modifier
-                                                                .size(36.dp)
-                                                                .alpha(0.8f),
-                                                    )
+                                                                .size(48.dp)
+                                                                .aspectRatio(1f)
+                                                                .clip(CircleShape),
+                                                        onClick = {
+                                                            actions.onUIEvent(UIEvent.Forward)
+                                                        },
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = SimpIcons.Forward5,
+                                                            tint = Color.White,
+                                                            contentDescription = "",
+                                                            modifier =
+                                                                Modifier
+                                                                    .size(36.dp)
+                                                                    .alpha(0.8f),
+                                                        )
+                                                    }
                                                 }
                                             }
                                             if (state.screenData.lyricsData != null) {
@@ -518,6 +540,17 @@ internal fun ExpressiveArtworkCardPage(
                 }
             }
         }
+
+        // Apple Music's animated artwork (current track) — Classic's Layer 3: edge to edge at the
+        // top of the page under controls that never hide, covering the card once its still is up.
+        if (pageAnimatedArtwork != null) {
+            AppleMusicAnimatedArtworkPage(
+                canvas = pageAnimatedArtwork,
+                cover = state.screenData.bitmap,
+                topChrome = topAppBarHeightDp.dp,
+                pageColor = colorScheme.surface,
+            )
+        }
     }
 }
 
@@ -535,6 +568,7 @@ internal fun ExpressiveBelowTheFold(
     val localDensity = LocalDensity.current
     val uriHandler = LocalUriHandler.current
     var showShareLyricsSheet by rememberSaveable { mutableStateOf(false) }
+    var showLyricsOffsetBar by rememberSaveable { mutableStateOf(false) }
     Column(Modifier.padding(horizontal = 20.dp)) {
         // Lyrics card
         AnimatedVisibility(
@@ -578,6 +612,21 @@ internal fun ExpressiveBelowTheFold(
                             }
                             Spacer(modifier = Modifier.width(8.dp))
                         }
+                        if (state.screenData.lyricsData.hasTiming()) {
+                            CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+                                IconButton(
+                                    onClick = { showLyricsOffsetBar = !showLyricsOffsetBar },
+                                ) {
+                                    Icon(
+                                        imageVector = SimpIcons.AvTimer,
+                                        contentDescription = stringResource(Res.string.lyrics_offset),
+                                        tint = colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
                         CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
                             IconButton(
                                 onClick = { showShareLyricsSheet = true },
@@ -604,6 +653,21 @@ internal fun ExpressiveBelowTheFold(
                             ) {
                                 Text(text = stringResource(Res.string.show), color = Color.White)
                             }
+                        }
+                    }
+                    AnimatedVisibility(
+                        visible = showLyricsOffsetBar && state.screenData.lyricsData.hasTiming(),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            LyricsOffsetBar(
+                                offsetMs = state.lyricsOffsetMs.toInt(),
+                                onOffsetChange = actions.onLyricsOffsetChange,
+                                containerColor = colorScheme.surfaceContainerHighest,
+                                contentColor = colorScheme.onSurface,
+                            )
                         }
                     }
                     Spacer(modifier = Modifier.height(18.dp))
@@ -710,8 +774,8 @@ internal fun ExpressiveBelowTheFold(
                                     .diskCacheKey(thumb)
                                     .crossfade(550)
                                     .build(),
-                            placeholder = rememberHolderPainter(isVideo = true),
-                            error = rememberHolderPainter(isVideo = true),
+                            placeholder = rememberHolderPainter(),
+                            error = rememberHolderPainter(),
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize(),
@@ -919,7 +983,12 @@ internal fun ExpressiveCollapsedToolbar(
                                             animationMode = MarqueeAnimationMode.Immediately,
                                         ).focusable(),
                             )
-                            LazyRow(verticalAlignment = Alignment.CenterVertically) {
+                            val artistRowState = rememberLazyListState()
+                            LazyRow(
+                                modifier = Modifier.mouseDragScroll(artistRowState),
+                                state = artistRowState,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 item {
                                     AnimatedVisibility(visible = state.screenData.isExplicit) {
                                         ExplicitBadge(
@@ -982,21 +1051,23 @@ internal fun ExpressiveCollapsedToolbar(
                             .wrapContentSize(Alignment.Center)
                             .align(Alignment.BottomCenter),
                 ) {
-                    LinearProgressIndicator(
-                        progress = { state.timelineState.current.toFloat() / state.timelineState.total },
-                        modifier =
-                            Modifier
-                                .fillMaxWidth()
-                                .height(1.dp)
-                                .background(
-                                    color = Color.Transparent,
-                                    shape = RoundedCornerShape(4.dp),
-                                ),
-                        color = colorScheme.primary,
-                        trackColor = colorScheme.surfaceContainerHighest,
-                        strokeCap = StrokeCap.Round,
-                        drawStopIndicator = {},
-                    )
+                    LeftToRight {
+                        LinearProgressIndicator(
+                            progress = { state.timelineState.current.toFloat() / state.timelineState.total },
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(
+                                        color = Color.Transparent,
+                                        shape = RoundedCornerShape(4.dp),
+                                    ),
+                            color = colorScheme.primary,
+                            trackColor = colorScheme.surfaceContainerHighest,
+                            strokeCap = StrokeCap.Round,
+                            drawStopIndicator = {},
+                        )
+                    }
                 }
             }
         }

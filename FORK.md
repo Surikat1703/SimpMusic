@@ -57,6 +57,22 @@ it is signed by the fork's own key, so it can only update over a build signed wi
   without it and that read as a missing feature. It can be switched off again in
   Settings → Listening history.
 
+## Upstream merge — v2.5.0 (Nov 2026)
+
+Merged `v2.5.0` (upstream `dev` at `513ec41a`) into `dev`, and `maxrave-dev/core`
+`1830a60` into the `core` fork branch. Kept, among the fork's own work: the My Mix tab,
+default-tab setting, honest offline lists (local tracks first, YouTube-Liked guard,
+`YT_LIKED_IDS`), `cn.kuwo.player` applicationId with the fork signing key, the
+download-state write guard and cache-file removal on removal, deterministic pagination
+and chunked `getSongsByListVideoId`, and the My Mix cache worker's full-liked-list
+eviction guard.
+
+Adopted from upstream: the reworked app shell (folding bar, DesktopSidebar, haze glass),
+the Coil `NetworkFirstInterceptor` (24 h image cache with stale fallback), lyrics offset
+setting, saved-queue `restoreSavedQueue` refactor, library overview cards, taste cards,
+listen-together groundwork, and the live-DB download badges in list rows (these supersede
+the fork's own `downloadedSet` badge hack in the playlist screen).
+
 ## Merging upstream
 
 ```bash

@@ -37,6 +37,7 @@ val mediaDir = File(rootDir, "core/media")
 rootProject.name = "SimpMusic"
 include(
     ":androidApp",
+    ":vivoAndroidApp",
     ":composeApp",
     ":desktopApp",
     ":common",
@@ -60,6 +61,7 @@ include(
     ":lastfm-empty",
     ":kizzy",
     ":listenTogether",
+    ":loginSync",
 )
 
 // core modules
@@ -76,6 +78,7 @@ project(":kotlinYtmusicScraper").projectDir = File(serviceDir, "kotlinYtmusicScr
 project(":spotify").projectDir = File(serviceDir, "spotify")
 project(":kizzy").projectDir = File(serviceDir, "kizzy")
 project(":listenTogether").projectDir = File(serviceDir, "listenTogether")
+project(":loginSync").projectDir = File(serviceDir, "loginSync")
 
 // media modules
 project(":media-jvm").projectDir = File(mediaDir, "media-jvm")

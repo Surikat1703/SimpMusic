@@ -21,15 +21,14 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -43,9 +42,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import com.maxrave.simpmusic.extension.LeftToRight
 import com.maxrave.simpmusic.ui.icon.ArrowForwardIos
 import simpmusic.composeapp.generated.resources.analytics_avg_per_day
 import simpmusic.composeapp.generated.resources.analytics_busiest_day
@@ -64,6 +65,8 @@ import coil3.request.ImageRequest
 import coil3.request.crossfade
 import com.kmpalette.rememberPaletteState
 import com.kyant.backdrop.highlight.Highlight
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import com.maxrave.common.Config
 import com.maxrave.domain.data.entities.AlbumEntity
 import com.maxrave.domain.data.entities.ArtistEntity
@@ -85,7 +88,7 @@ import com.maxrave.simpmusic.expect.ui.toImageBitmap
 import com.maxrave.simpmusic.extension.getScreenSizeInfo
 import com.maxrave.simpmusic.extension.getStringBlocking
 import com.maxrave.simpmusic.extension.smoothScrimBrush
-import com.maxrave.simpmusic.extension.toImmersiveBackground
+import com.maxrave.simpmusic.extension.rememberPaletteColor
 import com.maxrave.simpmusic.ui.component.AddToPlaylistModalBottomSheet
 import com.maxrave.simpmusic.ui.component.CenterLoadingBox
 import com.maxrave.simpmusic.ui.component.EndOfPage
@@ -93,6 +96,7 @@ import com.maxrave.simpmusic.ui.component.FiveImagesComponent
 import com.maxrave.simpmusic.ui.component.ImageData
 import com.maxrave.simpmusic.ui.component.LiquidGlassIconButton
 import com.maxrave.simpmusic.ui.component.NowPlayingBottomSheet
+import com.maxrave.simpmusic.ui.component.SectionHeaderButton
 import com.maxrave.simpmusic.ui.component.SongFullWidthItems
 import com.maxrave.simpmusic.ui.component.WrappedEntryCard
 import com.maxrave.simpmusic.ui.component.liquidGlass
@@ -101,8 +105,8 @@ import com.maxrave.simpmusic.ui.component.selection.SongSelectionTopAppBar
 import com.maxrave.simpmusic.ui.component.selection.rememberSongSelectionState
 import com.maxrave.simpmusic.ui.icon.ArrowBackIosNew
 import com.maxrave.simpmusic.ui.icon.KeyboardArrowDown
+import com.maxrave.simpmusic.ui.icon.ReceiptLong
 import com.maxrave.simpmusic.ui.icon.SimpIcons
-import com.maxrave.simpmusic.ui.navigation.destination.home.RecentlySongsDestination
 import com.maxrave.simpmusic.ui.navigation.destination.home.WrappedDestination
 import com.maxrave.simpmusic.ui.navigation.destination.library.LibraryDynamicPlaylistDestination
 import com.maxrave.simpmusic.ui.navigation.destination.list.AlbumDestination
@@ -124,6 +128,7 @@ import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.artists
 import simpmusic.composeapp.generated.resources.date_range
 import simpmusic.composeapp.generated.resources.last_30_days
+import simpmusic.composeapp.generated.resources.receipt_open
 import simpmusic.composeapp.generated.resources.last_7_days
 import simpmusic.composeapp.generated.resources.last_90_days
 import simpmusic.composeapp.generated.resources.listened_time
@@ -174,6 +179,10 @@ fun AnalyticsScreen(
 ) {
     val screenSizeInfo = getScreenSizeInfo()
     val uiState by analyticsViewModel.analyticsUIState.collectAsStateWithLifecycle()
+    val accountName by analyticsViewModel.accountName.collectAsStateWithLifecycle()
+    var showReceipt by rememberSaveable { mutableStateOf(false) }
+    // The receipt has something to print once the period's top tracks and its totals are both in.
+    val receiptReady = uiState.topTracks.data?.isNotEmpty() == true && uiState.stats.data != null
     // Held only to decide whether the Wrapped banner has anything to point at. The entry needs
     // this year's own figures to say what is waiting, so there is no cheaper question to ask —
     // and the banner must be absent, not empty, when the year is too thin to fill a reel.
@@ -223,13 +232,10 @@ fun AnalyticsScreen(
             paletteGeneratedFor = topTrackArtwork
         }
     }
-    // The last colour that actually resolved. Reading paletteState.palette straight would paint the
-    // page black for the whole duration of every generate(), because null is what it reads until the
-    // result is Success — and Color.Black is what a null palette resolves to.
-    var pageBackground by remember { mutableStateOf(Color.Black) }
-    LaunchedEffect(paletteState.palette) {
-        paletteState.palette?.let { pageBackground = it.toImmersiveBackground() }
-    }
+    // The last colour that actually resolved, faded on change (see UIExt.rememberPaletteColor).
+    // Reading paletteState.palette straight would paint the page black for the whole duration of
+    // every generate(), because null is what it reads until the result is Success.
+    val pageBackground = rememberPaletteColor(paletteState.palette)
 
     if (showSelectionSheet) {
         val selectedIds = selectionState.selected.toList()
@@ -329,17 +335,32 @@ fun AnalyticsScreen(
             }
 
             // Declared outside `item` on purpose: an item that renders nothing is still an item,
-            // and the list's 32dp SECTION_GAP would leave a hole where the banner is not shown.
-            (wrappedState as? WrappedUiState.Ready)?.let { ready ->
+            // and the list's 32dp SECTION_GAP would leave a hole where no banner is shown. The two
+            // banners share ONE item so they sit 12dp apart as a pair, not a section gap apart.
+            val wrappedReady = wrappedState as? WrappedUiState.Ready
+            if (receiptReady || wrappedReady != null) {
                 item {
-                    WrappedEntryCard(
-                        wrapped = ready.wrapped,
-                        onClick = { navController.navigate(WrappedDestination) },
+                    Column(
                         modifier =
                             Modifier.padding(
                                 horizontal = if (isPortrait) CONTENT_INSET else LANDSCAPE_GUTTER + CONTENT_INSET,
                             ),
-                    )
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        if (receiptReady) {
+                            ReceiptEntryCard(
+                                uiState = uiState,
+                                accountName = accountName,
+                                onClick = { showReceipt = true },
+                            )
+                        }
+                        wrappedReady?.let { ready ->
+                            WrappedEntryCard(
+                                wrapped = ready.wrapped,
+                                onClick = { navController.navigate(WrappedDestination) },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -454,16 +475,42 @@ fun AnalyticsScreen(
             navController.navigateUp()
         }
 
-        DayRangePill(
-            uiState = uiState,
-            backdrop = headerBackdrop,
-            onPick = { analyticsViewModel.setDayRange(it) },
+        // The receipt button shares the pill's row instead of taking a corner of its own, so the pill
+        // keeps its place and the button appears beside it once there is a list to print.
+        Row(
             modifier =
                 Modifier
                     .align(Alignment.TopEnd)
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(end = pillGutter, top = 16.dp),
-        )
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (receiptReady) {
+                val receiptLabel = stringResource(Res.string.receipt_open)
+                LiquidGlassIconButton(
+                    backdrop = headerBackdrop,
+                    imageVector = SimpIcons.ReceiptLong,
+                    highlight = Highlight(width = 1.dp),
+                    modifier = Modifier.size(48.dp).semantics { contentDescription = receiptLabel },
+                ) {
+                    showReceipt = true
+                }
+            }
+            DayRangePill(
+                uiState = uiState,
+                backdrop = headerBackdrop,
+                onPick = { analyticsViewModel.setDayRange(it) },
+            )
+        }
+
+        if (showReceipt) {
+            ShareReceiptSheet(
+                uiState = uiState,
+                accountName = accountName,
+                seedColor = pageBackground,
+                onDismiss = { showReceipt = false },
+            )
+        }
     }
 }
 
@@ -821,19 +868,26 @@ private fun PeriodNavigator(
 ) {
     val start = uiState.periodStart
     val end = uiState.periodEnd
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = gutter),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = if (gutter == 0.dp) Arrangement.spacedBy(14.dp) else Arrangement.SpaceBetween,
-    ) {
-        StepArrow(SimpIcons.ArrowBackIosNew, enabled = true) { onStep(-1) }
-        Text(
-            text = if (start != null && end != null) formatPeriodSpan(start, end) else "",
-            style = typo().bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-        )
-        StepArrow(SimpIcons.ArrowForwardIos, enabled = uiState.canStepForward) { onStep(1) }
+    // The arrows follow the timeline, earlier on the left; the date between them keeps the
+    // reading direction, or a right-to-left date would come out in the wrong order.
+    val readingDirection = LocalLayoutDirection.current
+    LeftToRight {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = gutter),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = if (gutter == 0.dp) Arrangement.spacedBy(14.dp) else Arrangement.SpaceBetween,
+        ) {
+            StepArrow(SimpIcons.ArrowBackIosNew, enabled = true) { onStep(-1) }
+            CompositionLocalProvider(LocalLayoutDirection provides readingDirection) {
+                Text(
+                    text = if (start != null && end != null) formatPeriodSpan(start, end) else "",
+                    style = typo().bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+            }
+            StepArrow(SimpIcons.ArrowForwardIos, enabled = uiState.canStepForward) { onStep(1) }
+        }
     }
 }
 
@@ -1068,15 +1122,7 @@ private fun SectionHeader(
             modifier = Modifier.weight(1f),
         )
         if (onMore != null) {
-            TextButton(
-                onClick = onMore,
-                colors =
-                    ButtonDefaults
-                        .textButtonColors()
-                        .copy(contentColor = MaterialTheme.colorScheme.onSurface),
-            ) {
-                Text(stringResource(Res.string.more), style = typo().bodySmall)
-            }
+            SectionHeaderButton(text = stringResource(Res.string.more), onClick = onMore)
         }
     }
 }
@@ -1094,9 +1140,7 @@ private fun RecentlyPlayedSection(
     val records = uiState.recentlyRecord.data ?: return
     if (records.isEmpty()) return
     Column {
-        SectionHeader(stringResource(Res.string.your_recently_played), gutter) {
-            navController.navigate(RecentlySongsDestination)
-        }
+        SectionHeader(stringResource(Res.string.your_recently_played), gutter)
         records.forEach { pair ->
             SongRow(
                 pair = pair.second,

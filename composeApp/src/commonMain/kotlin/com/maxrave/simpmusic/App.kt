@@ -33,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -43,8 +44,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.font.FontWeight
@@ -58,7 +62,7 @@ import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.window.core.layout.WindowSizeClass.Companion.WIDTH_DP_MEDIUM_LOWER_BOUND
-import coil3.toUri
+import com.maxrave.common.LibraryChipType
 import com.maxrave.domain.data.player.GenericMediaItem
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
@@ -71,7 +75,11 @@ import com.maxrave.simpmusic.expect.ui.rememberBackdrop
 import com.maxrave.simpmusic.extension.copy
 import com.maxrave.simpmusic.ui.component.AppBottomNavigationBar
 import com.maxrave.simpmusic.ui.component.AppNavigationRail
+import com.maxrave.simpmusic.ui.component.DesktopSidebar
 import com.maxrave.simpmusic.ui.component.LiquidGlassAppBottomNavigationBar
+import com.maxrave.simpmusic.ui.component.LocalAppDialogOpen
+import com.maxrave.simpmusic.ui.component.LocalNowPlayingOpen
+import com.maxrave.simpmusic.ui.component.LocalUserStarted
 import com.maxrave.simpmusic.ui.icon.ArrowForwardIos
 import com.maxrave.simpmusic.ui.icon.SimpIcons
 import com.maxrave.simpmusic.ui.navigation.destination.home.AnalyticsDestination
@@ -85,8 +93,10 @@ import com.maxrave.simpmusic.ui.navigation.destination.list.AlbumDestination
 import com.maxrave.simpmusic.ui.navigation.destination.list.ArtistDestination
 import com.maxrave.simpmusic.ui.navigation.destination.list.PlaylistDestination
 import com.maxrave.simpmusic.ui.navigation.destination.player.FullscreenDestination
+import com.maxrave.simpmusic.ui.navigation.destination.search.SearchDestination
 import com.maxrave.simpmusic.ui.navigation.graph.AppNavigationGraph
 import com.maxrave.simpmusic.ui.screen.MiniPlayer
+import com.maxrave.simpmusic.ui.screen.other.UnofficialBuildScreen
 import com.maxrave.simpmusic.ui.screen.player.NowPlayingScreen
 import com.maxrave.simpmusic.ui.screen.player.NowPlayingScreenContent
 import com.maxrave.simpmusic.ui.theme.AppTheme
@@ -98,13 +108,15 @@ import com.maxrave.simpmusic.ui.theme.fontFamily
 import com.maxrave.simpmusic.ui.theme.parseThemeColorHex
 import com.maxrave.simpmusic.ui.theme.typo
 import com.maxrave.simpmusic.utils.VersionManager
+import com.maxrave.simpmusic.utils.isAppLinkAvailable
+import com.maxrave.simpmusic.utils.libraryTabOf
 import com.maxrave.simpmusic.viewModel.SharedViewModel
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownTypography
-import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.materials.HazeMaterials
 import dev.chrisbanes.haze.rememberHazeState
+import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
@@ -128,7 +140,6 @@ import simpmusic.composeapp.generated.resources.this_link_is_not_supported
 import simpmusic.composeapp.generated.resources.unknown
 import simpmusic.composeapp.generated.resources.update_available
 import simpmusic.composeapp.generated.resources.update_message
-import simpmusic.composeapp.generated.resources.version_format
 import simpmusic.composeapp.generated.resources.yes
 import kotlin.time.ExperimentalTime
 
@@ -150,24 +161,22 @@ fun App(
     val intent by viewModel.intent.collectAsStateWithLifecycle()
     val showNotificationPermissionDialog by viewModel.showNotificationPermissionDialog.collectAsStateWithLifecycle()
 
-    val isTranslucentBottomBar by viewModel.getTranslucentBottomBar().collectAsStateWithLifecycle(DataStoreManager.FALSE)
     val isLiquidGlassEnabled by viewModel.getEnableLiquidGlass().collectAsStateWithLifecycle(DataStoreManager.FALSE)
+    // Analytics only makes sense with local tracking on, so its tab follows that setting.
     // Fork: both gates below must be TRUE from the very first frame if they are stored TRUE, because
     // the default-tab setting can point at a gated tab and the gate-fallback effect would otherwise
     // bounce it to Home before DataStore delivered anything. `collectAsStateWithLifecycle(default)`
     // only seeds the very first value, so the seed is read synchronously instead.
     val seedLocalTracking = remember { viewModel.isLocalTrackingEnabledNow() }
-    val seedLoggedIn = remember { viewModel.isYouTubeLoggedInNow() }
-    // Analytics only makes sense with local tracking on, so its tab follows that setting.
     val isLocalTrackingEnabled by viewModel.getLocalTrackingEnabled()
         .collectAsStateWithLifecycle(if (seedLocalTracking) DataStoreManager.TRUE else DataStoreManager.FALSE)
     val showAnalyticsTab = isLocalTrackingEnabled == TRUE
     // Mix for you comes from the signed-in YouTube account, so its tab follows the session — the
     // same condition that used to hide the chip inside Library.
+    val seedLoggedIn = remember { viewModel.isYouTubeLoggedInNow() }
     val isYouTubeLoggedIn by viewModel.getYouTubeLoggedIn()
         .collectAsStateWithLifecycle(if (seedLoggedIn) DataStoreManager.TRUE else DataStoreManager.FALSE)
     val showMixForYouTab = isYouTubeLoggedIn == TRUE
-
     // Fork: the app can open on a tab other than Home (Settings -> User interface -> Default tab).
     // Resolved ONCE per composition, because the bars read `startDestination` as the tab's
     // identity: any other tab the user then visits sets `selectedIndex` locally, and re-resolving
@@ -175,9 +184,17 @@ fun App(
     // the gate is off, so the app can never open on a tab that is not in the bar.
     val startDestination = remember { viewModel.resolveStartDestination() }
 
+    // Fork: the My Mix tab carries a player of its own, so the stock mini player is hidden there —
+    // otherwise the two would stack and say the same thing twice.
+    val isOnMixTab =
+        navController.currentBackStackEntryAsState().value?.destination?.hierarchy?.any {
+            it.hasRoute(MixForYouDestination::class)
+        } == true
+
     val themeMode by viewModel.getThemeMode().collectAsStateWithLifecycle(DataStoreManager.THEME_MODE_DARK)
     val themeColorSource by viewModel.getThemeColorSource().collectAsStateWithLifecycle(DataStoreManager.THEME_COLOR_DEFAULT)
     val customThemeColorHex by viewModel.getCustomThemeColor().collectAsStateWithLifecycle(DataStoreManager.DEFAULT_THEME_COLOR_HEX)
+    val isOfficialBuild by viewModel.isOfficialBuild.collectAsStateWithLifecycle()
     // MiniPlayer visibility: derived, never stored.
     //
     // This used to be a rememberSaveable Boolean written by a LaunchedEffect. Two things went
@@ -213,17 +230,30 @@ fun App(
         mutableStateOf(false)
     }
 
+    // Every dialog this file raises on its own. Home's launch banner waits until none is up; see
+    // LocalAppDialogOpen. (The banner waits for a running update check by itself.)
+    val appDialogOpen =
+        shouldShowUpdateDialog || showNotificationPermissionDialog ||
+            showDesktopNotificationPermissionDialog || sleepTimerState.isDone
+
+    // Set by the first press or wheel scroll anywhere in the app this launch, or by opening Now
+    // Playing. A launch banner that has not had its turn yet then waits for a later launch.
+    var userStarted by remember {
+        mutableStateOf(false)
+    }
+    LaunchedEffect(isShowNowPlaylistScreen) {
+        if (isShowNowPlaylistScreen) userStarted = true
+    }
+
     val hazeState =
-        rememberHazeState(
-            blurEnabled = true,
-        )
+        rememberHazeState()
 
     LaunchedEffect(intent) {
         val intent = intent ?: return@LaunchedEffect
         val data = intent.data
         Logger.d("MainActivity", "onCreate: $data")
         if (data != null) {
-            if (data == "simpmusic://notification".toUri()) {
+            if (data.scheme == "simpmusic" && data.host == "notification") {
                 viewModel.setIntent(null)
                 navController.navigate(
                     NotificationDestination,
@@ -257,6 +287,13 @@ fun App(
                         segments.getOrNull(1)
                     }
                 Logger.d("MainActivity", "simpmusic.org deep link, appPath: $appPath")
+                // A path added to the when below must also go into APP_LINK_PATHS in AppLinks.kt.
+                // Some screens exist only with local tracking on or while signed in to YouTube; see
+                // isAppLinkAvailable. Read before setIntent(null): clearing the intent changes this
+                // effect's key, and the next frame cancels the effect wherever it is suspended, which
+                // would lose a navigation waiting on these reads.
+                val localTrackingOn = viewModel.getLocalTrackingEnabled().first() == TRUE
+                val youTubeLoggedIn = viewModel.getYouTubeLoggedIn().first() == TRUE
                 viewModel.setIntent(null)
                 when (appPath) {
                     "watch" -> {
@@ -308,9 +345,51 @@ fun App(
                     "library" -> {
                         val type = data.getQueryParameter("type")
                         if (type.isNullOrBlank()) {
-                            navController.navigate(LibraryDestination)
+                            // simpmusic://library?tab=wrapped → the Library tab on one of its chips,
+                            // named as LibraryChipType stores them (a launch banner points at Wrapped).
+                            val tab = libraryTabOf(data)
+                            if (!isAppLinkAvailable(appPath, tab, localTrackingOn, youTubeLoggedIn)) {
+                                viewModel.makeToast(getString(Res.string.this_link_is_not_supported))
+                            } else {
+                                viewModel.requestLibraryTab(tab)
+                                navController.navigate(LibraryDestination)
+                            }
                         } else {
                             navController.navigate(LibraryDynamicPlaylistDestination(type = type))
+                        }
+                    }
+
+                    // simpmusic://analytics — added for the launch banners.
+                    "analytics" -> {
+                        if (isAppLinkAvailable(appPath, null, localTrackingOn, youTubeLoggedIn)) {
+                            navController.navigate(AnalyticsDestination)
+                        } else {
+                            viewModel.makeToast(getString(Res.string.this_link_is_not_supported))
+                        }
+                    }
+
+                    // simpmusic://taste — the AI taste card, which sits on Your library. A link of its
+                    // own rather than library?tab=your_library, so it can say that the card exists only
+                    // while local tracking is on.
+                    "taste" -> {
+                        if (isAppLinkAvailable(appPath, null, localTrackingOn, youTubeLoggedIn)) {
+                            viewModel.requestLibraryTab(LibraryChipType.YOUR_LIBRARY)
+                            navController.navigate(LibraryDestination)
+                        } else {
+                            viewModel.makeToast(getString(Res.string.this_link_is_not_supported))
+                        }
+                    }
+
+                    // simpmusic://recognize — the Quick Settings tile (Android only): Search with the
+                    // song recognition sheet open.
+                    "recognize" -> {
+                        if (isAppLinkAvailable(appPath, null, localTrackingOn, youTubeLoggedIn)) {
+                            viewModel.requestSongRecognition(true)
+                            // Single top: already on Search, that screen opens the sheet. A second
+                            // copy would race the one leaving for the request.
+                            navController.navigate(SearchDestination) { launchSingleTop = true }
+                        } else {
+                            viewModel.makeToast(getString(Res.string.this_link_is_not_supported))
                         }
                     }
 
@@ -383,19 +462,15 @@ fun App(
 
     LaunchedEffect(updateData) {
         val response = updateData ?: return@LaunchedEffect
-        if (viewModel.showedUpdateDialog &&
-            response.tagName != getString(Res.string.version_format, VersionManager.getVersionName())
-        ) {
+        // Only a NEWER release is offered. This used to compare the tags for inequality, which told a
+        // build ahead of the latest release (dev, beta) to "update" back down to it, and told every
+        // F-Droid-channel user to update on each launch: that channel's tag carries no leading "v".
+        if (viewModel.showedUpdateDialog && VersionManager.isBehind(response.tagName)) {
             shouldShowUpdateDialog = true
         }
     }
 
     val navBackStackEntry by navController.currentBackStackEntryAsState()
-    // Fork: the My Mix tab carries a player of its own, so the stock mini player is hidden there —
-    // otherwise the two would stack and say the same thing twice.
-    val isOnMixTab = navBackStackEntry?.destination?.hierarchy?.any {
-        it.hasRoute(MixForYouDestination::class)
-    } == true
     LaunchedEffect(navBackStackEntry) {
         Logger.d("MainActivity", "Current destination: ${navBackStackEntry?.destination?.route}")
         if (navBackStackEntry?.destination?.route?.contains("FullscreenDestination") == true) {
@@ -452,14 +527,15 @@ fun App(
         themeMode = themeMode,
         themeColorSource = themeColorSource,
         customThemeColor = parseThemeColorHex(customThemeColorHex),
-        // Desktop is unconditionally true — the liquid-glass setting row is Android-only, and the
-        // Desktop capsule player is glass by design. Same rule as MiniPlayer's useGlassSurface.
-        liquidGlassEnabled = isLiquidGlassEnabled == TRUE || getPlatform() == Platform.Desktop,
+        // The setting governs Desktop too, the same as Android: off, every glass surface draws flat.
+        liquidGlassEnabled = isLiquidGlassEnabled == TRUE,
     ) {
-        // Backdrop base must match the theme: white page → white glass, dark/AMOLED → black glass.
-        // Read inside AppTheme so MaterialTheme reflects the resolved scheme (light background is #FFFFFF).
+        if (!isOfficialBuild) {
+            UnofficialBuildScreen()
+            return@AppTheme
+        }
+        // Read inside AppTheme so MaterialTheme reflects the resolved scheme.
         val isLightScheme = MaterialTheme.colorScheme.background.luminance() > 0.5f
-        val backdrop = rememberBackdrop(if (isLightScheme) Color.White else Color.Black)
 
         // The desktop shell is a window colour with panels floating on it. The two schemes mirror
         // each other: the window takes the extreme (pure black / pure white) and the panel steps
@@ -467,7 +543,25 @@ fun App(
         val desktopWindow = if (isLightScheme) desktopWindowLight else desktopWindowDark
         val desktopPanel =
             if (isLightScheme) MaterialTheme.colorScheme.surfaceContainer else desktopPanelDark
+
+        // Backdrop base must match the page, so glass over an empty area reads as the page itself.
+        // On Desktop the page is the panel: its colour is painted outside the recorded layer, and
+        // colorScheme.background carries the seed's hue, which the glass's saturation boost brings out.
+        val backdrop = rememberBackdrop(if (isDesktopShell) desktopPanel else MaterialTheme.colorScheme.background)
         Scaffold(
+            // Watches for userStarted without consuming anything. Dialogs and sheets are windows or
+            // layers of their own, so a press inside one (closing the update dialog, say) does not count.
+            modifier =
+                Modifier.pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (!userStarted) {
+                            val type = awaitPointerEvent(PointerEventPass.Initial).type
+                            if (type == PointerEventType.Press || type == PointerEventType.Scroll) {
+                                userStarted = true
+                            }
+                        }
+                    }
+                },
             containerColor =
                 if (isDesktopShell) desktopWindow else MaterialTheme.colorScheme.background,
             bottomBar = {
@@ -477,24 +571,32 @@ fun App(
                         enter = fadeIn() + slideInHorizontally(),
                         exit = fadeOut(),
                     ) {
+                        // On Android both materials go through the folding bar, which draws the mini
+                        // player itself. Desktop keeps the always-open flat bar under its own one.
+                        val useFoldingBar = getPlatform() == Platform.Android || isLiquidGlassEnabled == TRUE
                         Column {
                             AnimatedVisibility(
                                 isShowMiniPlayer &&
+                                    !useFoldingBar &&
                                     isLiquidGlassEnabled == DataStoreManager.FALSE &&
+                                    // Fork: the Mix tab has its own player.
                                     !isOnMixTab,
                                 enter = fadeIn() + slideInHorizontally(),
                                 exit = fadeOut(),
                             ) {
                                 MiniPlayer(
                                     Modifier
-                                        .height(56.dp)
+                                        // 56dp card + the 4dp gap below.
+                                        .height(60.dp)
                                         .fillMaxWidth()
                                         .padding(
-                                            horizontal = 12.dp,
+                                            // The bottom bar's own 16dp, so both edges line up.
+                                            horizontal = 16.dp,
                                         ).padding(
                                             bottom = 4.dp,
                                         ),
                                     backdrop = backdrop,
+                                    navController = navController,
                                     onClick = {
                                         isShowNowPlaylistScreen = true
                                     },
@@ -504,9 +606,8 @@ fun App(
                                     },
                                 )
                             }
-                            if (isLiquidGlassEnabled == TRUE) {
+                            if (useFoldingBar) {
                                 LiquidGlassAppBottomNavigationBar(
-                                    startDestination = startDestination,
                                     navController = navController,
                                     backdrop = backdrop,
                                     viewModel = viewModel,
@@ -514,6 +615,7 @@ fun App(
                                     isScrolledToTop = isScrolledToTop,
                                     showAnalyticsTab = showAnalyticsTab,
                                     showMixForYouTab = showMixForYouTab,
+                                    liquidGlass = isLiquidGlassEnabled == TRUE,
                                 ) { klass ->
                                     viewModel.reloadDestination(klass)
                                 }
@@ -521,7 +623,6 @@ fun App(
                                 AppBottomNavigationBar(
                                     startDestination = startDestination,
                                     navController = navController,
-                                    isTranslucentBackground = isTranslucentBottomBar == TRUE,
                                     showAnalyticsTab = showAnalyticsTab,
                                     showMixForYouTab = showMixForYouTab,
                                 ) { klass ->
@@ -544,120 +645,170 @@ fun App(
                             },
                         ),
                 ) {
+                    val tabletMiniPlayer: @Composable (Modifier) -> Unit = { modifier ->
+                        androidx.compose.animation.AnimatedVisibility(
+                            // Fork: hidden on the Mix tab too — that tab has its own player.
+                            visible = isShowMiniPlayer && isTablet && !isInFullscreen && !isOnMixTab,
+                            modifier = modifier,
+                            enter = fadeIn() + slideInHorizontally(),
+                            exit = fadeOut(),
+                        ) {
+                            MiniPlayer(
+                                if (getPlatform() == Platform.Android) {
+                                    Modifier
+                                        // Glass keeps its 52dp card; the flat one is 56dp.
+                                        .height(if (isLiquidGlassEnabled == TRUE) 56.dp else 60.dp)
+                                        .fillMaxWidth(0.8f)
+                                        .padding(
+                                            horizontal = 12.dp,
+                                        ).padding(
+                                            bottom = 4.dp,
+                                        )
+                                } else {
+                                    // Floating capsule, Apple Music style: a fixed size so it never
+                                    // stretches to the window width, and no haze at all — the capsule
+                                    // paints its own liquid glass. Layering haze underneath blurs the
+                                    // same pixels twice and reads as a dark smear, not glass.
+                                    // padding BEFORE height: the other way round the bottom margin
+                                    // eats into the 72dp and the capsule ends up 52dp tall.
+                                    // 60dp is the floor for this layout: the content row is centred
+                                    // on the capsule's axis and the 16dp progress box hangs off the
+                                    // bottom, so the height has to cover the taller of the artwork
+                                    // (32dp) and the two text lines (~33dp), plus that 16dp, plus a
+                                    // gap. Going lower means shrinking the artwork again.
+                                    Modifier
+                                        .wrapContentWidth()
+                                        .padding(bottom = 20.dp)
+                                        .height(60.dp)
+                                },
+                                backdrop = backdrop,
+                                navController = navController,
+                                onClick = {
+                                    isShowNowPlaylistScreen = true
+                                },
+                                onClose = {
+                                    viewModel.stopPlayer()
+                                    viewModel.isServiceRunning = false
+                                },
+                                // The page lives in the Now Playing panel, so the panel opens with it.
+                                onOpenFullscreenLyrics = {
+                                    viewModel.requestFullscreenLyrics()
+                                    isShowNowPlaylistScreen = true
+                                },
+                            )
+                        }
+                    }
                     Row(
                         Modifier.fillMaxSize(),
                     ) {
-                        if (isTablet && !isInFullscreen) {
-                            AppNavigationRail(
-                                startDestination = startDestination,
-                                navController = navController,
-                                showAnalyticsTab = showAnalyticsTab,
-                                showMixForYouTab = showMixForYouTab,
-                            ) { klass ->
-                                viewModel.reloadDestination(klass)
-                            }
-                        }
-                        // Desktop only: the content sits in its own rounded panel floating on a
-                        // pure black window, Spotify style, while the rail stays flat black
-                        // outside it. Phones keep one continuous surface — the inset only reads
-                        // as deliberate when there is a window frame around it.
+                        // Everything left of Now Playing. On Desktop the capsule player sits on the centre of
+                        // this whole area, sidebar included, so it lives here rather than in the content panel,
+                        // which is both narrower than the capsule and clipped; and the area is what its glass
+                        // records, so the part over the sidebar refracts the sidebar instead of nothing.
                         Box(
                             Modifier
-                                .fillMaxSize()
                                 .weight(1f)
-                                .then(
-                                    if (isDesktopShell) {
-                                        Modifier
-                                            .padding(8.dp)
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(desktopPanel)
-                                    } else {
-                                        Modifier
-                                    },
-                                ),
+                                .fillMaxHeight(),
                         ) {
-                            Box(
+                            Row(
                                 Modifier
                                     .fillMaxSize()
                                     .then(
-                                        // Desktop is unconditional: the floating capsule player is ALWAYS
-                                        // liquid glass there, and glass with no recorded source draws as
-                                        // plain transparency. Gating the source on the setting while the
-                                        // capsule ignored it was exactly the nested-flag split that kept
-                                        // the capsule see-through.
-                                        if ((isLiquidGlassEnabled == TRUE || getPlatform() == Platform.Desktop) &&
-                                            isTablet &&
-                                            !isInFullscreen
-                                        ) {
+                                        // The Desktop capsule player's glass refracts this. Off, the capsule
+                                        // draws flat and nothing reads the recording, so skip it.
+                                        if (isLiquidGlassEnabled == TRUE && isDesktopShell && isTablet && !isInFullscreen) {
                                             Modifier.layerBackdrop(backdrop)
                                         } else {
                                             Modifier
                                         },
-                                    ).hazeSource(hazeState),
+                                    ),
                             ) {
-                                AppNavigationGraph(
-                                    innerPadding = innerPadding,
-                                    navController = navController,
-                                    startDestination = startDestination,
-                                    hideNavBar = {
-                                        isNavBarVisible = false
-                                    },
-                                    showNavBar = {
-                                        isNavBarVisible = true
-                                    },
-                                    showNowPlayingSheet = {
-                                        isShowNowPlaylistScreen = true
-                                    },
-                                    onScrolling = {
-                                        isScrolledToTop = it
-                                    },
-                                )
-                            }
-                            this@Row.AnimatedVisibility(
-                                modifier =
-                                    Modifier
-                                        .padding(innerPadding)
-                                        .align(Alignment.BottomCenter),
-                                visible = isShowMiniPlayer && isTablet && !isInFullscreen && !isOnMixTab,
-                                enter = fadeIn() + slideInHorizontally(),
-                                exit = fadeOut(),
-                            ) {
-                                MiniPlayer(
-                                    if (getPlatform() == Platform.Android) {
-                                        Modifier
-                                            .height(56.dp)
-                                            .fillMaxWidth(0.8f)
-                                            .padding(
-                                                horizontal = 12.dp,
-                                            ).padding(
-                                                bottom = 4.dp,
-                                            )
+                                if (isTablet && !isInFullscreen) {
+                                    if (isDesktopShell) {
+                                        DesktopSidebar(
+                                            navController = navController,
+                                            containerColor = desktopPanel,
+                                            showAnalyticsTab = showAnalyticsTab,
+                                            showMixForYouTab = showMixForYouTab,
+                                            // No end padding: the content panel's own 8dp is the gap between the two.
+                                            modifier = Modifier.padding(start = 8.dp, top = 8.dp, bottom = 8.dp),
+                                        ) { klass ->
+                                            viewModel.reloadDestination(klass)
+                                        }
                                     } else {
-                                        // Floating capsule, Apple Music style: a fixed size so it never
-                                        // stretches to the window width, and no haze at all — the capsule
-                                        // paints its own liquid glass. Layering haze underneath blurs the
-                                        // same pixels twice and reads as a dark smear, not glass.
-                                        // padding BEFORE height: the other way round the bottom margin
-                                        // eats into the 72dp and the capsule ends up 52dp tall.
-                                        // 60dp is the floor for this layout: the content row is centred
-                                        // on the capsule's axis and the 16dp progress box hangs off the
-                                        // bottom, so the height has to cover the taller of the artwork
-                                        // (32dp) and the two text lines (~33dp), plus that 16dp, plus a
-                                        // gap. Going lower means shrinking the artwork again.
+                                        AppNavigationRail(
+                                            startDestination = startDestination,
+                                            navController = navController,
+                                            showAnalyticsTab = showAnalyticsTab,
+                                            showMixForYouTab = showMixForYouTab,
+                                        ) { klass ->
+                                            viewModel.reloadDestination(klass)
+                                        }
+                                    }
+                                }
+                                // Desktop only: the content sits in its own rounded panel floating on a
+                                // pure black window, Spotify style, while the rail stays flat black
+                                // outside it. Phones keep one continuous surface — the inset only reads
+                                // as deliberate when there is a window frame around it.
+                                Box(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .weight(1f)
+                                        .then(
+                                            if (isDesktopShell) {
+                                                Modifier
+                                                    .padding(8.dp)
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .background(desktopPanel)
+                                            } else {
+                                                Modifier
+                                            },
+                                        ),
+                                ) {
+                                    Box(
                                         Modifier
-                                            .wrapContentWidth()
-                                            .padding(bottom = 20.dp)
-                                            .height(60.dp)
-                                    },
-                                    backdrop = backdrop,
-                                    onClick = {
-                                        isShowNowPlaylistScreen = true
-                                    },
-                                    onClose = {
-                                        viewModel.stopPlayer()
-                                        viewModel.isServiceRunning = false
-                                    },
-                                )
+                                            .fillMaxSize()
+                                            .then(
+                                                // Tablets record the capsule's source here; Desktop records it on
+                                                // the Row above, which takes in the sidebar as well.
+                                                if (isLiquidGlassEnabled == TRUE && !isDesktopShell && isTablet && !isInFullscreen) {
+                                                    Modifier.layerBackdrop(backdrop)
+                                                } else {
+                                                    Modifier
+                                                },
+                                            ).hazeSource(hazeState),
+                                    ) {
+                                        CompositionLocalProvider(
+                                            LocalAppDialogOpen provides appDialogOpen,
+                                            LocalNowPlayingOpen provides isShowNowPlaylistScreen,
+                                            LocalUserStarted provides userStarted,
+                                        ) {
+                                            AppNavigationGraph(
+                                                innerPadding = innerPadding,
+                                                navController = navController,
+                                                startDestination = startDestination,
+                                                hideNavBar = {
+                                                    isNavBarVisible = false
+                                                },
+                                                showNavBar = {
+                                                    isNavBarVisible = true
+                                                },
+                                                showNowPlayingSheet = {
+                                                    isShowNowPlaylistScreen = true
+                                                },
+                                                onScrolling = {
+                                                    isScrolledToTop = it
+                                                },
+                                            )
+                                        }
+                                    }
+                                    if (!isDesktopShell) {
+                                        tabletMiniPlayer(Modifier.padding(innerPadding).align(Alignment.BottomCenter))
+                                    }
+                                }
+                            }
+                            if (isDesktopShell) {
+                                tabletMiniPlayer(Modifier.padding(innerPadding).align(Alignment.BottomCenter))
                             }
                         }
                         if (isTablet && isTabletLandscape && !isInFullscreen) {
@@ -669,9 +820,24 @@ fun App(
                                 Row(
                                     Modifier
                                         .fillMaxHeight()
-                                        .fillMaxWidth(0.35f),
+                                        // The width Now Playing has always had: `fillMaxWidth(0.35f)` of what the
+                                        // 80dp NavigationRail left in this Row. The rail and the sidebar now sit
+                                        // inside the weighted Box, so that share is taken by hand from the Row's
+                                        // own width; otherwise it would follow the sidebar. On Desktop it is 8dp
+                                        // less, the spacer it no longer has, so the card keeps its exact size.
+                                        .layout { measurable, constraints ->
+                                            val width =
+                                                (
+                                                    ((constraints.maxWidth - 80.dp.roundToPx()) * 0.35f).roundToInt() -
+                                                        if (isDesktopShell) 8.dp.roundToPx() else 0
+                                                ).coerceIn(0, constraints.maxWidth)
+                                            val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
+                                            layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
+                                        },
                                 ) {
-                                    Spacer(Modifier.width(8.dp))
+                                    // On Desktop the content panel's own 8dp end padding is already the gap,
+                                    // the same 8dp it keeps from the sidebar; a spacer here doubled it.
+                                    if (!isDesktopShell) Spacer(Modifier.width(8.dp))
                                     Box(
                                         Modifier
                                             .padding(
@@ -839,6 +1005,9 @@ fun App(
                                         Res.string.update_message,
                                         response.tagName,
                                         formatted,
+                                        // values-iw/values-in still carry an old %3$s; Compose Resources indexes
+                                        // args without a bounds check, so omitting it crashes the dialog
+                                        "",
                                     )
                                 }
                             Column(

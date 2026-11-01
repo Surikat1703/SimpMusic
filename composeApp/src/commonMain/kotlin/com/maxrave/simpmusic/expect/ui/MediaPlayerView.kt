@@ -14,6 +14,9 @@ expect fun MediaPlayerView(
     // and clips the overflow. Default false keeps the legacy fit-height-by-screen
     // behavior used by NowPlaying / Fullscreen.
     cropToBounds: Boolean = false,
+    // Called once the video has drawn its first frame. Until then the view shows a black shutter,
+    // so a caller with a picture to show meanwhile keeps it on top until this fires.
+    onFirstFrame: () -> Unit = {},
 )
 
 @Composable
@@ -30,3 +33,11 @@ expect fun MediaPlayerViewWithSubtitle(
     mainTextStyle: TextStyle,
     translatedTextStyle: TextStyle,
 )
+
+/**
+ * Aspect ratio (width / height) of the video [playerName] is showing, or null until the player
+ * knows it. For laying out the frame around the video, so the frame takes the video's own shape
+ * instead of assuming 16:9.
+ */
+@Composable
+expect fun rememberVideoAspectRatio(playerName: String): Float?

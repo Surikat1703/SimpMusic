@@ -85,6 +85,7 @@ import coil3.request.crossfade
 import coil3.toBitmap
 import com.kyant.backdrop.highlight.Highlight
 import com.kmpalette.rememberPaletteState
+import com.maxrave.simpmusic.extension.barBlurStyle
 import com.maxrave.simpmusic.ui.component.DownloadingIndicator
 import com.maxrave.domain.data.entities.DownloadState
 import com.maxrave.domain.data.model.browse.album.Track
@@ -100,7 +101,7 @@ import com.maxrave.simpmusic.extension.artworkScrimBrush
 import com.maxrave.simpmusic.extension.getColorFromPalette
 import com.maxrave.simpmusic.extension.getScreenSizeInfo
 import com.maxrave.simpmusic.extension.getStringBlocking
-import com.maxrave.simpmusic.extension.toImmersiveBackground
+import com.maxrave.simpmusic.extension.rememberPaletteColor
 import com.maxrave.simpmusic.ui.component.AddToPlaylistModalBottomSheet
 import com.maxrave.simpmusic.ui.component.CenterLoadingBox
 import com.maxrave.simpmusic.ui.component.DescriptionView
@@ -136,11 +137,9 @@ import com.maxrave.simpmusic.viewModel.PlaylistViewModel
 import com.maxrave.simpmusic.viewModel.SharedViewModel
 import com.maxrave.simpmusic.viewModel.SongSelectionViewModel
 import com.maxrave.simpmusic.viewModel.UIEvent
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.HazeInput
+import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
-import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
-import dev.chrisbanes.haze.materials.HazeMaterials
 import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.collectLatest
@@ -163,7 +162,7 @@ import simpmusic.composeapp.generated.resources.radio
 import simpmusic.composeapp.generated.resources.search
 import simpmusic.composeapp.generated.resources.unlimited
 
-@OptIn(ExperimentalCoroutinesApi::class, ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
+@OptIn(ExperimentalCoroutinesApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun PlaylistScreen(
     viewModel: PlaylistViewModel = koinViewModel(),
@@ -186,21 +185,17 @@ fun PlaylistScreen(
     val liked by viewModel.liked.collectAsStateWithLifecycle()
     val tracks by viewModel.tracks.collectAsStateWithLifecycle()
     val tracksListState by viewModel.tracksListState.collectAsStateWithLifecycle()
-    val downloadedSongs by viewModel.downloadedSongs.collectAsStateWithLifecycle(emptyList())
-    val downloadedSet = remember(downloadedSongs) { downloadedSongs?.map { it.videoId }?.toSet().orEmpty() }
 
     var showSearchBar by rememberSaveable { mutableStateOf(false) }
     var searchBarHeightPx by remember { mutableStateOf(0) }
 
     val lazyState = rememberLazyListState()
-    var shouldHideTopBar by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(lazyState) {
-        snapshotFlow { lazyState.firstVisibleItemIndex > 0 }
-            .distinctUntilChanged()
-            .collect { shouldHide ->
-                shouldHideTopBar = shouldHide
-            }
+    val firstItemVisible by remember {
+        derivedStateOf {
+            lazyState.firstVisibleItemIndex == 0
+        }
     }
+    var shouldHideTopBar by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
 
     val selectionState = rememberSongSelectionState()
@@ -233,19 +228,27 @@ fun PlaylistScreen(
         }
     }
 
-    LaunchedEffect(lazyState, tracksListState, continuation) {
-        snapshotFlow {
-            val lastVisible = lazyState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -9
-            val total = lazyState.layoutInfo.totalItemsCount
-            tracksListState != ListState.PAGINATION_EXHAUST && lastVisible >= total - 6
-        }.distinctUntilChanged()
-        .collect { shouldPaginate ->
-            if (shouldPaginate && tracksListState == ListState.IDLE) {
-                viewModel.getContinuationTrack(
-                    id,
-                    continuation,
-                )
+    val shouldStartPaginate =
+        remember {
+            derivedStateOf {
+                tracksListState != ListState.PAGINATION_EXHAUST &&
+                    (
+                        lazyState.layoutInfo.visibleItemsInfo
+                            .lastOrNull()
+                            ?.index ?: -9
+                    ) >= (lazyState.layoutInfo.totalItemsCount - 6)
             }
+        }
+
+    LaunchedEffect(key1 = shouldStartPaginate.value) {
+        Logger.d(tag, "shouldStartPaginate: ${shouldStartPaginate.value}")
+        Logger.d(tag, "tracksListState: $tracksListState")
+        Logger.d(tag, "Continuation: $continuation")
+        if (shouldStartPaginate.value && tracksListState == ListState.IDLE) {
+            viewModel.getContinuationTrack(
+                id,
+                continuation,
+            )
         }
     }
 
@@ -296,7 +299,12 @@ fun PlaylistScreen(
             viewModel.getData(id)
         }
     }
+    LaunchedEffect(key1 = firstItemVisible) {
+        shouldHideTopBar = !firstItemVisible
+    }
     val paletteState = rememberPaletteState()
+    val hazeState =
+        rememberHazeState()
     var bitmap by remember {
         mutableStateOf<ImageBitmap?>(null)
     }
@@ -332,8 +340,8 @@ fun PlaylistScreen(
     val screenInfo = getScreenSizeInfo()
     val isPortrait = screenInfo.wDP < screenInfo.hDP
     val dominantColor = listColors.firstOrNull() ?: Color.Black
-    // Apple Music-style page background from the artwork's dominant tone (see UIExt.toImmersiveBackground).
-    val mutedPaletteBg = paletteState.palette.toImmersiveBackground()
+    // Apple Music-style page background from the artwork's dominant tone, held and faded (see UIExt.rememberPaletteColor).
+    val mutedPaletteBg = rememberPaletteColor(paletteState.palette)
 
     // Loading dialog
     val showLoadingDialog by viewModel.showLoadingDialog.collectAsStateWithLifecycle()
@@ -344,15 +352,23 @@ fun PlaylistScreen(
         )
     }
 //    Box {
-    when (val state = uiState) {
-        is PlaylistUIState.Success -> {
-            val data = state.data
-            if (data != null) {
+    Crossfade(
+        targetState = uiState,
+    ) { state ->
+        Logger.w(tag, "State hash: ${state.hashCode()}")
+        when (state) {
+            is PlaylistUIState.Success -> {
+                val data = state.data
+                Logger.d(tag, "data: $data")
+                if (data == null) return@Crossfade
+                val hazeState =
+                    rememberHazeState()
                 LazyColumn(
                     modifier =
                         Modifier
                             .fillMaxWidth()
-                            .background(mutedPaletteBg),
+                            .background(mutedPaletteBg)
+                            .hazeSource(hazeState),
                     state = lazyState,
                 ) {
                     if (!showSearchBar) {
@@ -394,7 +410,7 @@ fun PlaylistScreen(
                                                                 .memoryCachePolicy(CachePolicy.ENABLED)
                                                                 .diskCacheKey(data.thumbnail)
                                                                 .memoryCacheKey(data.thumbnail)
-                                                                .crossfade(false)
+                                                                .crossfade(550)
                                                                 .build(),
                                                         placeholder = rememberHolderPainter(),
                                                         error = rememberHolderPainter(),
@@ -572,7 +588,7 @@ fun PlaylistScreen(
                                                                     .memoryCachePolicy(CachePolicy.ENABLED)
                                                                     .diskCacheKey(data.thumbnail)
                                                                     .memoryCacheKey(data.thumbnail)
-                                                                    .crossfade(false)
+                                                                    .crossfade(550)
                                                                     .build(),
                                                             placeholder = rememberHolderPainter(),
                                                             error = rememberHolderPainter(),
@@ -1035,34 +1051,55 @@ fun PlaylistScreen(
                         }
                     }
                     items(count = filteredTrack.size, key = { index ->
-                        filteredTrack.getOrNull(index)?.videoId ?: index
+                        val item = filteredTrack.getOrNull(index)
+                        (item?.videoId ?: "") + "item_$index"
                     }) { index ->
                         val item = filteredTrack.getOrNull(index)
                         if (item != null) {
-                            val isDownloaded = item.videoId in downloadedSet
-                            val itemDownloadState = if (isDownloaded) DownloadState.STATE_DOWNLOADED else DownloadState.STATE_NOT_DOWNLOADED
-                            Column {
-                                SongFullWidthItems(
-                                    forceDark = true,
-                                    isPlaying = (playingTrack?.videoId == item.videoId && isPlaying),
-                                    track = item,
-                                    downloadState = itemDownloadState,
-                                    onMoreClickListener = { onItemMoreClick(it) },
-                                    onClickListener = {
-                                        Logger.w("PlaylistScreen", "index: $index")
-                                        onPlaylistItemClick(it)
-                                    },
-                                    onAddToQueue = {
-                                        sharedViewModel.addListToQueue(
-                                            arrayListOf(item),
-                                        )
-                                    },
-                                    selectionMode = selectionState.isActive,
-                                    isSelected = selectionState.isSelected(item.videoId),
-                                    onLongClick = { selectionState.start(it) },
-                                    onSelectToggle = { selectionState.toggle(it) },
-                                    modifier = Modifier,
-                                )
+                            Column(modifier = Modifier.animateItem()) {
+                                if (playingTrack?.videoId == item.videoId && isPlaying) {
+                                    SongFullWidthItems(
+                                        forceDark = true,
+                                        isPlaying = true,
+                                        track = item,
+                                        onMoreClickListener = { onItemMoreClick(it) },
+                                        onClickListener = {
+                                            Logger.w("PlaylistScreen", "index: $index")
+                                            onPlaylistItemClick(it)
+                                        },
+                                        onAddToQueue = {
+                                            sharedViewModel.addListToQueue(
+                                                arrayListOf(item),
+                                            )
+                                        },
+                                        selectionMode = selectionState.isActive,
+                                        isSelected = selectionState.isSelected(item.videoId),
+                                        onLongClick = { selectionState.start(it) },
+                                        onSelectToggle = { selectionState.toggle(it) },
+                                        modifier = Modifier,
+                                    )
+                                } else {
+                                    SongFullWidthItems(
+                                        forceDark = true,
+                                        isPlaying = false,
+                                        track = item,
+                                        onMoreClickListener = { onItemMoreClick(it) },
+                                        onClickListener = {
+                                            Logger.w("PlaylistScreen", "index: $index")
+                                            onPlaylistItemClick(it)
+                                        },
+                                        onAddToQueue = {
+                                            sharedViewModel.addListToQueue(
+                                                arrayListOf(item),
+                                            )
+                                        },
+                                        selectionMode = selectionState.isActive,
+                                        isSelected = selectionState.isSelected(item.videoId),
+                                        onLongClick = { selectionState.start(it) },
+                                        onSelectToggle = { selectionState.toggle(it) },
+                                        modifier = Modifier,
+                                    )
+                                }
                                 if (index < filteredTrack.size - 1) {
                                     HorizontalDivider(
                                         modifier = Modifier.padding(start = 72.dp, end = 16.dp),
@@ -1136,7 +1173,7 @@ fun PlaylistScreen(
                         Modifier
                             .fillMaxWidth()
                             .onGloballyPositioned { searchBarHeightPx = it.size.height }
-                            .background(mutedPaletteBg.copy(alpha = 0.96f)),
+                            .hazeBlur(HazeInput.Sources(hazeState), barBlurStyle(mutedPaletteBg, 0.55f)),
                     ) {
                         Row(
                             modifier =
@@ -1205,7 +1242,8 @@ fun PlaylistScreen(
                             selectionState.toggleSelectAll(filteredTrack.map { it.videoId })
                         },
                         onOpenActions = { showSelectionSheet = true },
-                        modifier = Modifier.background(mutedPaletteBg.copy(alpha = 0.96f)),
+                        modifier =
+                            Modifier.hazeBlur(HazeInput.Sources(hazeState), barBlurStyle(mutedPaletteBg, 0.55f)),
                     )
                 }
                 if (showSelectionSheet) {
@@ -1248,17 +1286,15 @@ fun PlaylistScreen(
                     )
                 }
                 if (itemBottomSheetShow && currentItem != null) {
-                    val track = currentItem?.toSongEntity()
-                    if (track != null) {
-                        NowPlayingBottomSheet(
-                            onDismiss = {
-                                itemBottomSheetShow = false
-                                currentItem = null
-                            },
-                            navController = navController,
-                            song = track,
-                        )
-                    }
+                    val track = currentItem?.toSongEntity() ?: return@Crossfade
+                    NowPlayingBottomSheet(
+                        onDismiss = {
+                            itemBottomSheetShow = false
+                            currentItem = null
+                        },
+                        navController = navController,
+                        song = track,
+                    )
                 }
                 if (playlistBottomSheetShow) {
                     Logger.w("PlaylistScreen", "PlaylistBottomSheet")
@@ -1334,28 +1370,29 @@ fun PlaylistScreen(
                         },
                         colors =
                             TopAppBarDefaults.topAppBarColors(
-                                containerColor = mutedPaletteBg.copy(alpha = 0.96f),
+                                containerColor = Color.Transparent,
                             ),
-                        modifier = Modifier.background(mutedPaletteBg.copy(alpha = 0.96f)),
+                        modifier =
+                            Modifier.hazeBlur(HazeInput.Sources(hazeState), barBlurStyle(mutedPaletteBg, 0.55f)),
                     )
                 }
             }
-        }
 
-        is PlaylistUIState.Loading -> {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center,
-            ) {
-                CenterLoadingBox(
-                    modifier = Modifier.size(80.dp),
-                )
+            is PlaylistUIState.Loading -> {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CenterLoadingBox(
+                        modifier = Modifier.size(80.dp),
+                    )
+                }
             }
-        }
 
-        is PlaylistUIState.Error -> {
-            viewModel.makeToast("Error: ${state.message}")
-            navController.navigateUp()
+            is PlaylistUIState.Error -> {
+                viewModel.makeToast("Error: ${state.message}")
+                navController.navigateUp()
+            }
         }
     }
 }

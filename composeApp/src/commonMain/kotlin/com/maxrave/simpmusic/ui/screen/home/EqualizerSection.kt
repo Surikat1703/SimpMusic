@@ -41,6 +41,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.maxrave.simpmusic.extension.LeftToRight
 import com.maxrave.simpmusic.ui.icon.Check
 import com.maxrave.simpmusic.ui.icon.KeyboardArrowDown
 import com.maxrave.simpmusic.ui.icon.SimpIcons
@@ -109,13 +110,13 @@ fun EqualizerSection(viewModel: SettingsViewModel = koinViewModel()) {
     val autoEqProfile by viewModel.equalizerAutoEqProfile.collectAsStateWithLifecycle()
     val autoEqLabel = remember(bands, autoEqProfile) { autoEqLabelFor(autoEqProfile, bands) }
 
-    // A surface of its own, a step lighter than the settings background. The block is a single
+    // A surface of its own, a step off the settings card it sits in. The block is a single
     // control made of several widgets; without a card behind it the curve, the preamp slider and
     // the reset button read as three unrelated rows in the list.
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
             // Two questions, two rows: what the music should sound like, and what this pair of
@@ -211,7 +212,9 @@ fun EqualizerSection(viewModel: SettingsViewModel = koinViewModel()) {
             ) {
             Slider(
                 value = draftPreamp ?: preamp,
-                onValueChange = { draftPreamp = it },
+                // Whole dB, like the bands: the label already reads in whole dB, and a free value
+                // made the number it shows hard to land on.
+                onValueChange = { draftPreamp = it.roundToInt().toFloat() },
                 // Applied on release rather than per frame. Every write lands in storage and from
                 // there in mpv, which drains and re-creates its whole audio filter graph to take it.
                 onValueChangeFinished = { draftPreamp?.let(viewModel::setEqualizerPreamp) },
@@ -229,49 +232,53 @@ fun EqualizerSection(viewModel: SettingsViewModel = koinViewModel()) {
 
             // The dB scale sits beside the plot, not inside it: drawing text into the canvas would
             // put it under the curve the user is dragging.
-            Row(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.width(44.dp).height(CURVE_HEIGHT).padding(vertical = 8.dp),
-                verticalArrangement = Arrangement.SpaceBetween,
-                horizontalAlignment = Alignment.End,
-            ) {
-                Text(
-                    text = "+${BAND_RANGE_DB.roundToInt()}dB",
-                    style = typo().bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            LeftToRight {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.width(44.dp).height(CURVE_HEIGHT).padding(vertical = 8.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                    horizontalAlignment = Alignment.End,
+                ) {
+                    Text(
+                        text = "+${BAND_RANGE_DB.roundToInt()}dB",
+                        style = typo().bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "-${BAND_RANGE_DB.roundToInt()}dB",
+                        style = typo().bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                EqualizerCurve(
+                    bands = bands,
+                    curveColor = curveColor,
+                    gridColor = gridColor,
+                    onBandsChange = { viewModel.setEqualizerBands(it) },
+                    modifier =
+                        Modifier
+                            .weight(1f)
+                            .height(CURVE_HEIGHT)
+                            .padding(start = 8.dp, top = 8.dp, bottom = 8.dp),
                 )
-                Text(
-                    text = "-${BAND_RANGE_DB.roundToInt()}dB",
-                    style = typo().bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            EqualizerCurve(
-                bands = bands,
-                curveColor = curveColor,
-                gridColor = gridColor,
-                onBandsChange = { viewModel.setEqualizerBands(it) },
-                modifier =
-                    Modifier
-                        .weight(1f)
-                        .height(CURVE_HEIGHT)
-                        .padding(start = 8.dp, top = 8.dp, bottom = 8.dp),
-            )
+                }
             }
 
             // Aligned to the plot, not to the block: the 44dp gutter above holds the dB scale, so the
             // labels have to start where the curve does or every frequency sits off its own gridline.
-            Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 44.dp + 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-            EQUALIZER_BAND_LABELS.forEach { label ->
-                Text(
-                    text = label,
-                    style = typo().bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            LeftToRight {
+                Row(
+                modifier = Modifier.fillMaxWidth().padding(start = 44.dp + 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                EQUALIZER_BAND_LABELS.forEach { label ->
+                    Text(
+                        text = label,
+                        style = typo().bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                }
             }
 
             // Bottom right, the way a dialog puts its action — it applies to the whole block above.
@@ -385,11 +392,14 @@ private fun gainToY(
     height: Float,
 ): Float = height / 2f - (gainDb / BAND_RANGE_DB) * (height / 2f)
 
-/** Inverse of [gainToY], clamped so a drag past the edge parks at the limit instead of overshooting. */
+/**
+ * Inverse of [gainToY], in whole dB — a continuous drag was too fine to land on a value by hand —
+ * and clamped so a drag past the edge parks at the limit instead of overshooting.
+ */
 private fun yToGain(
     y: Float,
     height: Float,
-): Float = (((height / 2f - y) / (height / 2f)) * BAND_RANGE_DB).coerceIn(-BAND_RANGE_DB, BAND_RANGE_DB)
+): Float = (((height / 2f - y) / (height / 2f)) * BAND_RANGE_DB).roundToInt().toFloat().coerceIn(-BAND_RANGE_DB, BAND_RANGE_DB)
 
 /**
  * This curve with the band nearest [position] on the x axis moved to the gain [position] sits at.

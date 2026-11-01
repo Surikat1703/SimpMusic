@@ -2,10 +2,15 @@ package com.maxrave.simpmusic.ui.screen.other
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.MarqueeAnimationMode
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -19,6 +24,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -56,14 +62,21 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
@@ -80,20 +93,21 @@ import com.maxrave.domain.data.model.searchResult.songs.Artist
 import com.maxrave.domain.mediaservice.handler.PlaylistType
 import com.maxrave.domain.mediaservice.handler.QueueData
 import com.maxrave.domain.utils.toSongEntity
-import com.maxrave.simpmusic.Platform
+import com.maxrave.simpmusic.expect.shareUrl
 import com.maxrave.simpmusic.expect.ui.MediaPlayerView
 import com.maxrave.simpmusic.expect.ui.layerBackdrop
 import com.maxrave.simpmusic.expect.ui.rememberBackdrop
 import com.maxrave.simpmusic.expect.ui.toImageBitmap
 import com.maxrave.simpmusic.extension.artworkScrimBrush
+import com.maxrave.simpmusic.extension.barBlurStyle
 import com.maxrave.simpmusic.extension.getColorFromPalette
 import com.maxrave.simpmusic.extension.getScreenSizeInfo
+import com.maxrave.simpmusic.extension.mouseDragScroll
 import com.maxrave.simpmusic.extension.getStringBlocking
 import com.maxrave.simpmusic.extension.hexToColorOrNull
 import com.maxrave.simpmusic.extension.rgbFactor
-import com.maxrave.simpmusic.extension.toImmersiveBackground
+import com.maxrave.simpmusic.extension.rememberPaletteColor
 import com.maxrave.simpmusic.extension.toSquareThumbnailUrl
-import com.maxrave.simpmusic.getPlatform
 import com.maxrave.simpmusic.ui.component.AddToPlaylistModalBottomSheet
 import com.maxrave.simpmusic.ui.component.CenterLoadingBox
 import com.maxrave.simpmusic.ui.component.rememberHolderPainter
@@ -105,45 +119,57 @@ import com.maxrave.simpmusic.ui.component.HomeItemVideo
 import com.maxrave.simpmusic.ui.component.LiquidGlassIconButton
 import com.maxrave.simpmusic.ui.component.NowPlayingBottomSheet
 import com.maxrave.simpmusic.ui.component.SongFullWidthItems
+import com.maxrave.simpmusic.ui.component.liquidGlass
 import com.maxrave.simpmusic.ui.component.selection.SelectedSongsBottomSheet
 import com.maxrave.simpmusic.ui.component.selection.SongSelectionState
 import com.maxrave.simpmusic.ui.component.selection.SongSelectionTopAppBar
 import com.maxrave.simpmusic.ui.component.selection.rememberSongSelectionState
 import com.maxrave.simpmusic.ui.icon.ArrowBackIosNew
 import com.maxrave.simpmusic.ui.icon.Check
+import com.maxrave.simpmusic.ui.icon.IosShare
+import com.maxrave.simpmusic.ui.icon.Movie
+import com.maxrave.simpmusic.ui.icon.MovieOff
 import com.maxrave.simpmusic.ui.icon.PersonAdd
 import com.maxrave.simpmusic.ui.icon.Sensors
 import com.maxrave.simpmusic.ui.icon.Shuffle
 import com.maxrave.simpmusic.ui.icon.SimpIcons
+import com.maxrave.simpmusic.ui.navigation.destination.library.LibraryDynamicPlaylistDestination
 import com.maxrave.simpmusic.ui.navigation.destination.list.AlbumDestination
 import com.maxrave.simpmusic.ui.navigation.destination.list.ArtistDestination
 import com.maxrave.simpmusic.ui.navigation.destination.list.MoreAlbumsDestination
 import com.maxrave.simpmusic.ui.navigation.destination.list.PlaylistDestination
+import com.maxrave.simpmusic.ui.screen.library.LibraryDynamicPlaylistType
 import com.maxrave.simpmusic.ui.theme.typo
 import com.maxrave.simpmusic.viewModel.ArtistScreenState
 import com.maxrave.simpmusic.viewModel.ArtistViewModel
 import com.maxrave.simpmusic.viewModel.SharedViewModel
 import com.maxrave.simpmusic.viewModel.SongSelectionViewModel
-import dev.chrisbanes.haze.HazeProgressive
-import dev.chrisbanes.haze.HazeTint
-import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.HazeInput
+import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.compose.resources.getString
+import org.jetbrains.compose.resources.painterResource
+import org.jetbrains.compose.resources.pluralStringResource
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.albums
+import simpmusic.composeapp.generated.resources.baseline_favorite_24
 import simpmusic.composeapp.generated.resources.description
 import simpmusic.composeapp.generated.resources.error
 import simpmusic.composeapp.generated.resources.featured_inArtist
+import simpmusic.composeapp.generated.resources.liked_songs
+import simpmusic.composeapp.generated.resources.liked_songs_by
+import simpmusic.composeapp.generated.resources.liked_songs_count
 import simpmusic.composeapp.generated.resources.more
 import simpmusic.composeapp.generated.resources.no_description
 import simpmusic.composeapp.generated.resources.popular
 import simpmusic.composeapp.generated.resources.related_artists
+import simpmusic.composeapp.generated.resources.share
 import simpmusic.composeapp.generated.resources.singles
 import simpmusic.composeapp.generated.resources.unknown
 import simpmusic.composeapp.generated.resources.videos
@@ -158,7 +184,12 @@ fun ArtistScreen(
 ) {
     val artistScreenState by viewModel.artistScreenState.collectAsStateWithLifecycle()
     val isFollowed by viewModel.followed.collectAsStateWithLifecycle()
-    val canvasUrl by viewModel.canvasUrl.collectAsStateWithLifecycle()
+    val artistMotion by viewModel.artistMotion.collectAsStateWithLifecycle()
+    // Header plays the artist's animated artwork by default; the top-right toggle swaps it for
+    // their picture. Keyed on the channel, so opening a different artist starts as video again —
+    // keyed on a url it would not reset between two artists whose videos are both absent.
+    var showHeaderVideo by rememberSaveable(channelId) { mutableStateOf(true) }
+    val shareTitle = stringResource(Res.string.share)
     val artistLogo by viewModel.artistLogo.collectAsStateWithLifecycle()
 
     val playingTrack by remember {
@@ -189,6 +220,18 @@ fun ArtistScreen(
     // one (including every desktop window) uses a half-viewport-tall frame instead.
     val screenInfo = getScreenSizeInfo()
     val isPortrait = screenInfo.wDP < screenInfo.hDP
+    // Apple Music publishes no tall cut for an artist, so the square rendition fills the square
+    // portrait frame and the wide one the banner-shaped landscape frame. Each stands in for the
+    // other when it is missing on its own: a rendition of the wrong shape still beats no video.
+    val headerVideoUrl =
+        artistMotion
+            ?.let {
+                if (isPortrait) {
+                    it.squareVideoUrl ?: it.wideVideoUrl
+                } else {
+                    it.wideVideoUrl ?: it.squareVideoUrl
+                }
+            }?.takeIf { showHeaderVideo }
 
     // Palette extraction from the artist artwork (portrait Apple-style only).
     val paletteState = com.kmpalette.rememberPaletteState()
@@ -204,16 +247,31 @@ fun ArtistScreen(
         }
     }
 
-    // Apple Music-style page background from the artwork's dominant tone (see UIExt.toImmersiveBackground).
-    val mutedPaletteBg = paletteState.palette.toImmersiveBackground()
+    // Apple Music-style page background from the artwork's dominant tone, held and faded (see UIExt.rememberPaletteColor).
+    val mutedPaletteBg = rememberPaletteColor(paletteState.palette)
     // Tint for the description card, matching the non-portrait CollapsingToolbar color.
-    val sectionTint = paletteState.palette.getColorFromPalette()
+    val sectionTint = rememberPaletteColor(paletteState.palette) { it.getColorFromPalette() }
 
     // Accent color for the action buttons, sourced from the artist name-logo image's dominant
-    // color (hidden catalog). Falls back to white until the logo loads (or if none exists).
-    val artistAccent = artistLogo?.bgColorHex?.hexToColorOrNull() ?: Color.White
+    // color (hidden catalog). Falls back to white until the logo loads (or if none exists), and
+    // fades to the logo's colour instead of snapping when it does. A logo colour without WCAG's 3:1
+    // contrast against the page also falls back to white: Ariana Grande's is near-black on a
+    // near-black page, which hid all three buttons.
+    val artistAccent by animateColorAsState(
+        targetValue =
+            artistLogo
+                ?.bgColorHex
+                ?.hexToColorOrNull()
+                ?.takeIf {
+                    val accent = it.luminance()
+                    val page = mutedPaletteBg.luminance()
+                    (maxOf(accent, page) + 0.05f) / (minOf(accent, page) + 0.05f) >= 3f
+                } ?: Color.White,
+        animationSpec = tween(500),
+        label = "artistAccent",
+    )
 
-    val hazeState = rememberHazeState(blurEnabled = true)
+    val hazeState = rememberHazeState()
     val lazyState = rememberLazyListState()
     val firstItemVisible by remember {
         derivedStateOf { lazyState.firstVisibleItemIndex == 0 }
@@ -252,12 +310,10 @@ fun ArtistScreen(
                                 // (unlike Modifier.offset, which only moves pixels, not layout).
                                 verticalArrangement = Arrangement.spacedBy((-36).dp),
                             ) {
-                                // Edge-to-edge artwork (canvas plays on top of it when available).
+                                // Edge-to-edge artwork (the artist's video plays on top of it when available).
                                 // Glass back button MUST be a sibling of the backdrop source
                                 // (not a child) to avoid render feedback loop / RuntimeShader crash.
                                 val artworkBackdrop = rememberBackdrop(Color.Black)
-                                // Haze state for the bottom progressive-blur fade (source = media layer).
-                                val headerHaze = rememberHazeState(blurEnabled = true)
                                 // Portrait fills a SQUARE frame, so the URL is clamped to a square
                                 // size there (logic from commit 5e596c5b). Landscape keeps YouTube's
                                 // own wide banner (e.g. w2880-h1200) instead: squaring the source
@@ -274,19 +330,43 @@ fun ArtistScreen(
                                                 if (isPortrait) {
                                                     Modifier.aspectRatio(1f)
                                                 } else {
-                                                    // Half the viewport, matching Album/Playlist/LocalPlaylist.
-                                                    // A square frame only works while the frame is roughly as
-                                                    // wide as a phone; on a landscape window aspectRatio(1f)
-                                                    // makes this as tall as the window is wide and the artwork
-                                                    // (or a playing canvas) swallows the entire page.
-                                                    Modifier.height((screenInfo.hDP / 2).dp)
+                                                    // The banner's own shape, so it is shown whole instead of
+                                                    // cropped into a fixed hDP/2 strip. 2.4:1 (YouTube's
+                                                    // w2880-h1200) until it decodes; a square bitmap left over
+                                                    // from portrait is ignored so the frame never goes square.
+                                                    Modifier.aspectRatio(
+                                                        bitmap?.takeIf { it.width > it.height }?.let { it.width.toFloat() / it.height } ?: 2.4f,
+                                                    )
                                                 },
                                             ),
                                 ) {
-                                    // Inner Box — backdrop SOURCE (artwork + canvas + overlays, NO glass)
+                                    // Inner Box — backdrop SOURCE (artwork + video + overlays, NO glass)
                                     Box(modifier = Modifier.fillMaxSize().clipToBounds().layerBackdrop(artworkBackdrop)) {
-                                        // Media layer (artwork + canvas) — Haze SOURCE for the bottom blur.
-                                        Box(modifier = Modifier.fillMaxSize().hazeSource(headerHaze)) {
+                                        // Media layer (video + artwork). The video draws a black shutter
+                                        // until its first frame, so the artwork stays ON TOP of it until
+                                        // then and only fades out after — hiding the artwork the moment the
+                                        // video's url arrived flashed the header black.
+                                        Box(modifier = Modifier.fillMaxSize()) {
+                                            var videoShown by remember(headerVideoUrl) { mutableStateOf(false) }
+                                            val artworkAlpha by animateFloatAsState(
+                                                targetValue = if (headerVideoUrl != null && videoShown) 0f else 1f,
+                                                animationSpec = tween(500),
+                                                label = "artistArtworkOverVideo",
+                                            )
+                                            // The artist's animated artwork plays AS the background when
+                                            // there is one; otherwise the static artwork above shows.
+                                            headerVideoUrl?.let { videoUrl ->
+                                                // cropToBounds center scale-to-covers it into the header
+                                                // frame (ContentScale.Crop): true video aspect ratio, no
+                                                // stretch, overflow clipped — which is what absorbs the
+                                                // difference between the rendition and the frame.
+                                                MediaPlayerView(
+                                                    url = videoUrl,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    cropToBounds = true,
+                                                    onFirstFrame = { videoShown = true },
+                                                )
+                                            }
                                             AsyncImage(
                                                 model =
                                                     ImageRequest
@@ -296,90 +376,87 @@ fun ArtistScreen(
                                                         .memoryCachePolicy(CachePolicy.ENABLED)
                                                         .diskCacheKey(headerImageUrl)
                                                         .memoryCacheKey(headerImageUrl)
-                                                        .crossfade(false)
+                                                        .crossfade(550)
                                                         .build(),
                                                 placeholder = rememberHolderPainter(),
                                                 error = rememberHolderPainter(),
                                                 contentDescription = null,
                                                 // FillWidth fits the square source into the square portrait
-                                                // frame. Landscape covers with Crop, and it only trims a
-                                                // little because the source there is YouTube's own wide
-                                                // banner (~2.4:1) against a ~3.3:1 frame — a squared source
-                                                // would have lost far more of its height to the same crop.
+                                                // frame. The landscape frame takes the banner's own aspect,
+                                                // so Crop trims nothing once it has decoded.
                                                 contentScale =
                                                     if (isPortrait) ContentScale.FillWidth else ContentScale.Crop,
                                                 // Always decoded so the page background color can be extracted
-                                                // from the artwork palette, even when a canvas is playing.
+                                                // from the artwork palette, even when the video is playing.
                                                 onSuccess = {
                                                     bitmap = it.result.image.toImageBitmap()
                                                 },
-                                                // Hidden (but still decoded above) while a canvas is present —
-                                                // the canvas is shown instead. No canvas -> artwork is shown.
+                                                // Faded out (but still decoded above) once the video has drawn
+                                                // its first frame. No video -> artwork is shown.
                                                 modifier =
                                                     Modifier
                                                         .fillMaxSize()
-                                                        .alpha(if (canvasUrl != null) 0f else 1f),
+                                                        .graphicsLayer { alpha = artworkAlpha },
                                             )
-                                            // Canvas (Spotify) plays AS the background when present;
-                                            // otherwise the static artwork above is the fallback.
-                                            canvasUrl?.let { canvas ->
-                                                // Canvas is a tall/portrait video. cropToBounds center
-                                                // scale-to-covers it into the header frame (ContentScale.Crop):
-                                                // true video aspect ratio, no stretch, overflow clipped.
-                                                MediaPlayerView(
-                                                    url = canvas.first,
-                                                    modifier = Modifier.fillMaxSize(),
-                                                    cropToBounds = true,
+                                            // The artwork's bottom 200dp melts into the page through a
+                                            // Modifier.blur copy of it, faded in by a DstIn gradient. At
+                                            // the top of the ramp the copy is fully transparent, so there
+                                            // is no seam — haze's HazeProgressive drew a visible line
+                                            // there on Android (and crashes on skiko). Below Android 12
+                                            // blur is a no-op and the copy is pixel-identical to the
+                                            // artwork, leaving just the colour scrim. Fades with the
+                                            // artwork, and is dropped once the video has taken over.
+                                            if (artworkAlpha > 0f) {
+                                                AsyncImage(
+                                                    model =
+                                                        ImageRequest
+                                                            .Builder(LocalPlatformContext.current)
+                                                            .data(headerImageUrl)
+                                                            .crossfade(550)
+                                                            .build(),
+                                                    contentDescription = null,
+                                                    contentScale =
+                                                        if (isPortrait) ContentScale.FillWidth else ContentScale.Crop,
+                                                    modifier =
+                                                        Modifier
+                                                            .fillMaxSize()
+                                                            .graphicsLayer {
+                                                                compositingStrategy = CompositingStrategy.Offscreen
+                                                                alpha = artworkAlpha
+                                                            }.drawWithContent {
+                                                                drawContent()
+                                                                drawRect(
+                                                                    brush =
+                                                                        Brush.verticalGradient(
+                                                                            colors = listOf(Color.Transparent, Color.Black),
+                                                                            startY = size.height - 200.dp.toPx(),
+                                                                            endY = size.height,
+                                                                        ),
+                                                                    blendMode = BlendMode.DstIn,
+                                                                )
+                                                            }.blur(32.dp),
                                                 )
                                             }
-                                        } // end media layer (Haze source)
-                                        // Bottom fade — progressive blur (Haze) over the media layer, so the
-                                        // canvas/artwork edge melts into the page bg.
-                                        // ANDROID ONLY. On skiko this kills the process: haze 1.7.2's
-                                        // progressive path calls ShaderBrush.createShader(Size), whose
-                                        // mangled signature does not match the Compose this build pins
-                                        // (material3-multiplatform 1.12.0-alpha01 / skiko 0.148.1), so it
-                                        // throws NoSuchMethodError from inside the draw pass —
-                                        // RenderEffect.skiko.kt:234. Only the progressive path is affected;
-                                        // plain hazeEffect is used on Desktop elsewhere and is fine.
-                                        // Dropping it costs Desktop only the blur: the colour scrim below
-                                        // is a separate box and still fades the artwork edge.
-                                        if (getPlatform() == Platform.Android) {
-                                            Box(
-                                                modifier =
-                                                    Modifier
-                                                        .fillMaxWidth()
-                                                        .height(200.dp)
-                                                        .align(Alignment.BottomCenter)
-                                                        .hazeEffect(headerHaze) {
-                                                            blurRadius = 32.dp
-                                                            progressive =
-                                                                HazeProgressive.verticalGradient(
-                                                                    startIntensity = 0f,
-                                                                    endIntensity = 1f,
-                                                                )
-                                                        },
-                                            )
-                                        }
+                                        } // end media layer
+                                        // 5% black over the artwork/video, under the fade and scrim, so
+                                        // a bright photo sits back a little behind the title.
+                                        Box(
+                                            modifier =
+                                                Modifier
+                                                    .fillMaxSize()
+                                                    .background(Color.Black.copy(alpha = 0.05f)),
+                                        )
                                         // Color scrim is a SEPARATE, taller box: the blur stays at 200dp so
                                         // its cost doesn't grow, while the color gets 70% of the artwork
                                         // to ramp over. A short ramp means a steep alpha, and a steep
-                                        // alpha is what reads as a visible edge. Both figures are 70% of
-                                        // the frame's own height: the portrait frame is square so that is
-                                        // 70% of the width, the landscape one is hDP/2 so it is 35% of hDP.
-                                        // Measuring off the width in landscape would make the scrim taller
-                                        // than the artwork itself.
+                                        // alpha is what reads as a visible edge. 70% of the frame's own
+                                        // height in both orientations — measured off the frame, since the
+                                        // landscape one now follows the banner rather than the window.
                                         Box(
                                             modifier =
                                                 Modifier
                                                     .fillMaxWidth()
-                                                    .height(
-                                                        if (isPortrait) {
-                                                            (screenInfo.wDP * 0.7f).dp
-                                                        } else {
-                                                            (screenInfo.hDP * 0.35f).dp
-                                                        },
-                                                    )
+                                                    .fillMaxHeight(0.7f)
                                                     .align(Alignment.BottomCenter)
                                                     .background(artworkScrimBrush(mutedPaletteBg)),
                                         )
@@ -396,26 +473,46 @@ fun ArtistScreen(
                                             horizontalAlignment = Alignment.CenterHorizontally,
                                         ) {
                                             val logo = artistLogo
-                                            if (logo != null) {
-                                                // Artist name rendered as a logo image (hidden catalog),
-                                                // in place of the plain-text title.
-                                                AsyncImage(
-                                                    model = logo.logoUrl,
-                                                    contentDescription = state.data.title,
-                                                    contentScale = ContentScale.Fit,
-                                                    modifier =
-                                                        Modifier
-                                                            .fillMaxWidth(0.7f)
-                                                            .heightIn(max = 84.dp),
-                                                )
-                                            } else {
-                                                Text(
-                                                    text = state.data.title ?: stringResource(Res.string.unknown),
-                                                    style = typo().titleLarge,
-                                                    color = Color.White,
-                                                    maxLines = 2,
-                                                    textAlign = TextAlign.Center,
-                                                )
+                                            // The name stays as text until the logo image has actually
+                                            // loaded, then the two cross-fade and the box eases to the
+                                            // logo's height. Swapping on the logo's url alone blanked the
+                                            // line until the image arrived and then popped it in. Saveable,
+                                            // so coming back to the page shows the logo straight away.
+                                            var logoLoaded by rememberSaveable(logo?.logoUrl) { mutableStateOf(false) }
+                                            val logoAlpha by animateFloatAsState(
+                                                targetValue = if (logo != null && logoLoaded) 1f else 0f,
+                                                animationSpec = tween(500),
+                                                label = "artistNameLogo",
+                                            )
+                                            Box(
+                                                modifier = Modifier.fillMaxWidth().animateContentSize(),
+                                                contentAlignment = Alignment.Center,
+                                            ) {
+                                                if (logoAlpha < 1f) {
+                                                    Text(
+                                                        text = state.data.title ?: stringResource(Res.string.unknown),
+                                                        style = typo().titleLarge,
+                                                        color = Color.White,
+                                                        maxLines = 2,
+                                                        textAlign = TextAlign.Center,
+                                                        modifier = Modifier.graphicsLayer { alpha = 1f - logoAlpha },
+                                                    )
+                                                }
+                                                if (logo != null) {
+                                                    // Artist name rendered as a logo image (hidden catalog),
+                                                    // in place of the plain-text title.
+                                                    AsyncImage(
+                                                        model = logo.logoUrl,
+                                                        contentDescription = state.data.title,
+                                                        contentScale = ContentScale.Fit,
+                                                        onSuccess = { logoLoaded = true },
+                                                        modifier =
+                                                            Modifier
+                                                                .fillMaxWidth(0.7f)
+                                                                .heightIn(max = 84.dp)
+                                                                .graphicsLayer { alpha = logoAlpha },
+                                                    )
+                                                }
                                             }
                                             val meta =
                                                 listOfNotNull(
@@ -449,6 +546,34 @@ fun ArtistScreen(
                                                 .size(48.dp),
                                     ) {
                                         navController.navigateUp()
+                                    }
+                                    // Top-right pill mirroring the back button, shaped like the
+                                    // Playlist header's: [video ⇄ picture] when the artist has an animated
+                                    // artwork, then share. A sibling of the backdrop source, like the back button.
+                                    Row(
+                                        modifier =
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .padding(12.dp)
+                                                .windowInsetsPadding(WindowInsets.statusBars)
+                                                .height(48.dp)
+                                                .liquidGlass(artworkBackdrop, RoundedCornerShape(24.dp)),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        if (artistMotion != null) {
+                                            IconButton(onClick = { showHeaderVideo = !showHeaderVideo }) {
+                                                Icon(
+                                                    imageVector = if (showHeaderVideo) SimpIcons.MovieOff else SimpIcons.Movie,
+                                                    contentDescription = null,
+                                                    tint = Color.White,
+                                                )
+                                            }
+                                        }
+                                        IconButton(
+                                            onClick = { shareUrl(shareTitle, "https://music.youtube.com/channel/$channelId") },
+                                        ) {
+                                            Icon(SimpIcons.IosShare, contentDescription = shareTitle, tint = Color.White)
+                                        }
                                     }
                                 }
 
@@ -544,6 +669,7 @@ fun ArtistScreen(
                         }
                         item(contentType = "sections") {
                             ArtistSections(
+                                channelId = channelId,
                                 state = state,
                                 selectionState = selectionState,
                                 playingTrack = playingTrack,
@@ -598,12 +724,7 @@ fun ArtistScreen(
                                     containerColor = Color.Transparent,
                                 ),
                             modifier =
-                                Modifier.hazeEffect(hazeState) {
-                                    blurEnabled = true
-                                    blurRadius = 24.dp
-                                    backgroundColor = mutedPaletteBg
-                                    tints = listOf(HazeTint(mutedPaletteBg.copy(alpha = 0.55f)))
-                                },
+                                Modifier.hazeBlur(HazeInput.Sources(hazeState), barBlurStyle(mutedPaletteBg, 0.55f)),
                         )
                     }
                 }
@@ -693,6 +814,7 @@ fun ArtistScreen(
  */
 @Composable
 private fun ArtistSections(
+    channelId: String,
     state: ArtistScreenState.Success,
     selectionState: SongSelectionState,
     playingTrack: String?,
@@ -702,7 +824,26 @@ private fun ArtistSections(
     sharedViewModel: SharedViewModel,
     onTrackMore: (Track) -> Unit,
 ) {
+    val likedSongCount by viewModel.likedSongCount.collectAsStateWithLifecycle()
     Column {
+        // Liked songs by this artist (issue #2524), shaped like Spotify's section: a heading, then
+        // the artist's picture wearing the liked heart beside the count. Shown only once at least
+        // one song is liked; opens the full list with the route's channelId, the id it was counted by.
+        androidx.compose.animation.AnimatedVisibility(likedSongCount > 0) {
+            LikedSongsSection(
+                imageUrl = state.data.imageUrl?.toSquareThumbnailUrl(),
+                count = likedSongCount,
+                artistName = state.data.title.orEmpty(),
+                onClick = {
+                    navController.navigate(
+                        LibraryDynamicPlaylistDestination(
+                            type = LibraryDynamicPlaylistType.ArtistLiked(channelId).toStringParams(),
+                        ),
+                    )
+                },
+            )
+        }
+
         // Popular Songs
         AnimatedVisibility(state.data.popularSongs.isNotEmpty()) {
             Column {
@@ -816,7 +957,10 @@ private fun ArtistSections(
                         Text(stringResource(Res.string.more), style = typo().bodySmall)
                     }
                 }
+                val singlesRowState = rememberLazyListState()
                 LazyRow(
+                    modifier = Modifier.mouseDragScroll(singlesRowState),
+                    state = singlesRowState,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     item {
@@ -884,7 +1028,10 @@ private fun ArtistSections(
                         Text(stringResource(Res.string.more), style = typo().bodySmall)
                     }
                 }
+                val albumsRowState = rememberLazyListState()
                 LazyRow(
+                    modifier = Modifier.mouseDragScroll(albumsRowState),
+                    state = albumsRowState,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     item {
@@ -951,7 +1098,10 @@ private fun ArtistSections(
                         Text(stringResource(Res.string.more), style = typo().bodySmall)
                     }
                 }
+                val videosRowState = rememberLazyListState()
                 LazyRow(
+                    modifier = Modifier.mouseDragScroll(videosRowState),
+                    state = videosRowState,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     item {
@@ -1018,7 +1168,10 @@ private fun ArtistSections(
                                 .padding(vertical = 10.dp),
                     )
                 }
+                val featuredRowState = rememberLazyListState()
                 LazyRow(
+                    modifier = Modifier.mouseDragScroll(featuredRowState),
+                    state = featuredRowState,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     item {
@@ -1066,7 +1219,10 @@ private fun ArtistSections(
                                 .padding(vertical = 10.dp),
                     )
                 }
+                val relatedRowState = rememberLazyListState()
                 LazyRow(
+                    modifier = Modifier.mouseDragScroll(relatedRowState),
+                    state = relatedRowState,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     item {
@@ -1145,5 +1301,73 @@ private fun ArtistSections(
             )
         }
         EndOfPage()
+    }
+}
+
+/**
+ * "Liked songs" as a section of its own: the heading, then the artist's picture wearing the liked
+ * heart beside "3 songs" / "By <artist>". The whole block opens
+ * [LibraryDynamicPlaylistType.ArtistLiked]. Heading and text colours follow the sections around it,
+ * which draw white on the artwork-tinted page.
+ */
+@Composable
+private fun LikedSongsSection(
+    imageUrl: String?,
+    count: Int,
+    artistName: String,
+    onClick: () -> Unit,
+) {
+    Column {
+        // No "More" button beside it, so the padding stands in for the height the TextButton gives
+        // the Popular and Singles headings.
+        Text(
+            text = stringResource(Res.string.liked_songs),
+            style = typo().labelMedium,
+            color = Color.White,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onClick)
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+        ) {
+            Box(modifier = Modifier.size(48.dp)) {
+                AsyncImage(
+                    model = imageUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().clip(CircleShape),
+                )
+                Image(
+                    painter = painterResource(Res.drawable.baseline_favorite_24),
+                    contentDescription = null,
+                    modifier =
+                        Modifier
+                            .align(Alignment.BottomEnd)
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black)
+                            .padding(3.dp),
+                )
+            }
+            Column(modifier = Modifier.padding(start = 12.dp)) {
+                Text(
+                    text = pluralStringResource(Res.plurals.liked_songs_count, count, count),
+                    style = typo().titleSmall,
+                    color = Color.White,
+                    maxLines = 1,
+                )
+                Text(
+                    text = stringResource(Res.string.liked_songs_by, artistName),
+                    style = typo().bodySmall,
+                    color = Color(0xC4FFFFFF),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }

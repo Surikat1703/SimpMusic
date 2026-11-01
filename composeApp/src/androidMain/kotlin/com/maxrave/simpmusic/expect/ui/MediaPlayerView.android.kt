@@ -20,6 +20,7 @@ actual fun MediaPlayerView(
     url: String,
     modifier: Modifier,
     cropToBounds: Boolean,
+    onFirstFrame: () -> Unit,
 ) {
     MediaPlayerView(
         modifier = modifier,
@@ -28,8 +29,13 @@ actual fun MediaPlayerView(
         url = url,
         screenSize = getScreenSizeInfo(),
         cropToBounds = cropToBounds,
+        onFirstFrame = onFirstFrame,
     )
 }
+
+// Fully qualified: the media3-ui helper shares this function's name and signature.
+@Composable
+actual fun rememberVideoAspectRatio(playerName: String): Float? = com.maxrave.media3.ui.rememberVideoAspectRatio(playerName)
 
 @Composable
 actual fun MediaPlayerViewWithSubtitle(
