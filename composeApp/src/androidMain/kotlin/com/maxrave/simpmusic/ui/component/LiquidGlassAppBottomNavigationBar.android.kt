@@ -174,7 +174,7 @@ actual fun LiquidGlassAppBottomNavigationBar(
     val miniPlayerGap = if (liquidGlass) 12.dp else 8.dp
     val constraintSet =
         remember(isShowMiniPlayer, isExpanded, liquidGlass) {
-            decoupledConstraints(isShowMiniPlayer, isExpanded, miniPlayerPadding, miniPlayerGap)
+            decoupledConstraints(isShowMiniPlayer && !isOnMixTab, isExpanded, miniPlayerPadding, miniPlayerGap)
         }
 
     LaunchedEffect(isScrolledToTop) {
