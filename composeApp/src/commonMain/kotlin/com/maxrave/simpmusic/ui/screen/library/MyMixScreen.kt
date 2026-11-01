@@ -104,6 +104,7 @@ import com.maxrave.simpmusic.viewModel.SharedViewModel
 import com.maxrave.simpmusic.viewModel.UIEvent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -557,33 +558,46 @@ fun MyMixScreen(
     // while this tab stays composed, which used to freeze the page offline until another tab was
     // opened. So while the shelf is empty (and the manual switch is off) the tab retries the fetch
     // itself — the first success latches and the page leaves offline mode on its own, no matter
-    // what the callback said. Entry burst first: one probe per second for a minute, then one
-    // probe a minute so a truly dead network isn't hammered.
+    // what the callback said.
+    // PERF FIX: original burst of 60 req/min was hammering YouTube API and blocking coroutines
+    // during the first 60 seconds of launch. Now: check cache first (free), then 3 fast retries
+    // at 5s intervals, then fall back to 60s polling.
     var probeSucceeded by remember { mutableStateOf(false) }
     var fetchInFlight by remember { mutableStateOf(false) }
     LaunchedEffect(manualOffline) {
         if (manualOffline) return@LaunchedEffect
-        suspend fun probeOnce() {
+        // Fast path: data already loaded — no network call needed at all.
+        if (!viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
+            probeSucceeded = true
+            return@LaunchedEffect
+        }
+        suspend fun probeOnce(): Boolean {
             if (!viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
                 probeSucceeded = true
-                return
+                return true
             }
-            if (fetchInFlight) return
+            if (fetchInFlight) return false
             fetchInFlight = true
             try {
                 runCatching { viewModel.getYouTubeMixedForYou() }
             } finally {
                 fetchInFlight = false
             }
+            if (!viewModel.youTubeMixForYou.value.data.isNullOrEmpty()) {
+                probeSucceeded = true
+                return true
+            }
+            return false
         }
-        repeat(60) {
-            probeOnce()
-            if (probeSucceeded) return@LaunchedEffect
-            delay(1_000)
+        // Phase 1: 3 quick retries, 5 s apart (15 s total worst case, not 60 s).
+        repeat(3) {
+            if (probeOnce()) return@LaunchedEffect
+            delay(5_000)
         }
+        // Phase 2: slow poll — one attempt per minute until success.
         while (!probeSucceeded) {
-            probeOnce()
-            if (!probeSucceeded) delay(60_000)
+            if (probeOnce()) return@LaunchedEffect
+            delay(60_000)
         }
     }
     // Fork: offline is claimed only when there is nothing to show AND no fetch ever succeeded —
@@ -1620,11 +1634,14 @@ private fun MyMixCacheCard(
     // the songs actually on disk, so it cannot drift from what the worker decided — and it also
     // watches the live download states, so the count ticks up while a batch is still downloading
     // instead of only after the worker rewrites the plan.
+    // PERF FIX: downloadTask fires very frequently during batch downloads; debounce it to 2 s
+    // so Room isn't queried on every single download tick.
     val downloadHandler: DownloadHandler = koinInject()
     LaunchedEffect(Unit) {
+        @OptIn(kotlinx.coroutines.FlowPreview::class)
         combine(
             dataStoreManager.getString(MyMixPrefs.CACHED_IDS).distinctUntilChanged(),
-            downloadHandler.downloadTask,
+            downloadHandler.downloadTask.debounce(2_000),
         ) { raw, _ -> raw }
             .collect { raw ->
                 val ids = raw.orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }

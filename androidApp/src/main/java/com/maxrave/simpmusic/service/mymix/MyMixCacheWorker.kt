@@ -81,7 +81,7 @@ class MyMixCacheWorker(
         }
         Logger.w(TAG, "Caching $trackCount track(s) of $browseId")
 
-        val tracks = fetchTracks(browseId)
+        val tracks = fetchTracks(browseId, trackCount)
         if (tracks.isEmpty()) {
             Logger.w(TAG, "Mix $browseId returned no tracks")
             return
@@ -150,9 +150,11 @@ class MyMixCacheWorker(
      * replaced by newly downloaded ones — so the cache cannot grow without bound.
      *
      * A track is NEVER deleted once the user has claimed it: locally liked, present in the local
-     * liked songs, or sitting in the account's YouTube Liked Music playlist (fetched best-effort —
-     * offline the local signals still guard). Only fully downloaded rows are touched; anything
-     * mid-download is left alone.
+     * liked songs, or sitting in the account's YouTube Liked Music playlist. That last signal must
+     * be the COMPLETE list — see [fetchYouTubeLikedIds] — and eviction is skipped entirely for
+     * this run when the list could not be fetched whole (offline, geo-blocked, or longer than the
+     * page cap): "we could not read the likes" must never be read as "the user does not like it".
+     * Only fully downloaded rows are touched; anything mid-download is left alone.
      */
     private suspend fun evictStale(staleIds: Set<String>): Set<String> {
         if (staleIds.isEmpty()) return emptySet()
@@ -161,23 +163,27 @@ class MyMixCacheWorker(
         if (candidates.isEmpty()) return emptySet()
         val likedIds = runCatching { songRepository.getLikedSongs().first().map { it.videoId }.toSet() }
             .getOrDefault(emptySet())
-        val youTubeLikedIds = runCatching {
-            (playlistRepository.getPlaylistData(
-                playlistId = MyMixPrefs.YT_LIKED_PLAYLIST_ID,
-                viewString = "views",
-            ).first() as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)
-                ?.data?.first?.tracks.orEmpty().map { it.videoId }.toSet()
-        }.getOrNull()
-        if (!youTubeLikedIds.isNullOrEmpty()) {
+        val existingYtLikedIds = runCatching {
+            dataStoreManager.getString(MyMixPrefs.YT_LIKED_IDS).first()
+                .orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        }.getOrDefault(emptySet())
+        // Fork: the whole liked list, paged to the end — "absent from page one" used to read as
+        // "not liked" and deleted downloads of tracks the account had liked all along. A failed or
+        // truncated fetch returns null, and null means NO evidence: eviction is skipped for this
+        // run rather than trusting the (possibly stale) local sets alone.
+        val fetchedYtLikedIds = fetchYouTubeLikedIds()
+        if (fetchedYtLikedIds == null) {
+            Logger.w(TAG, "Liked list unavailable or incomplete, skipping eviction this run")
+            return emptySet()
+        }
+        val combinedLiked = existingYtLikedIds + fetchedYtLikedIds
+        if (combinedLiked.isNotEmpty() && combinedLiked != existingYtLikedIds) {
             runCatching {
-                dataStoreManager.putString(MyMixPrefs.YT_LIKED_IDS, youTubeLikedIds.joinToString(","))
+                dataStoreManager.putString(MyMixPrefs.YT_LIKED_IDS, combinedLiked.joinToString(","))
             }
         }
-        // Fork: behind a VPN the Liked fetch fails, so the last good set is kept on disk and
-        // reused — a stale guard only over-protects, while a missing one deletes user data.
-        val knownYouTubeLikedIds = youTubeLikedIds.orEmpty() +
-            dataStoreManager.getString(MyMixPrefs.YT_LIKED_IDS).first()
-                .orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        val knownYouTubeLikedIds = combinedLiked
+
         val evicted = mutableSetOf<String>()
         for (entity in candidates) {
             val id = entity.videoId
@@ -193,6 +199,55 @@ class MyMixCacheWorker(
     }
 
     /**
+     * Fork: the account's liked ids, paged all the way to the end, or null when the answer cannot
+     * be trusted.
+     *
+     * Eviction deletes files, so "not in the fetched set" is only allowed to mean "absent from
+     * every page of the list". A failed first page, a failed continuation, a page that comes back
+     * empty while a continuation is still pending, or a list longer than the page cap — all return
+     * null: no evidence, no deletion. A null discards even the pages that did arrive, because
+     * absence from them is exactly what eviction would act on.
+     */
+    private suspend fun fetchYouTubeLikedIds(maxPages: Int = 20): Set<String>? {
+        val first = runCatching {
+            (playlistRepository.getPlaylistData(
+                playlistId = MyMixPrefs.YT_LIKED_PLAYLIST_ID,
+                viewString = "views",
+            ).firstOrNull { it is Resource.Success<*> } as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)
+                ?.data
+        }.getOrNull() ?: return null
+
+        val ids = mutableSetOf<String>()
+        first.first.tracks.forEach { ids.add(it.videoId) }
+        var continuation = first.second
+        var pages = 0
+        while (!continuation.isNullOrEmpty()) {
+            if (pages >= maxPages) {
+                Logger.w(TAG, "Liked list exceeds $maxPages continuation pages, treating as incomplete")
+                return null
+            }
+            pages++
+            val page =
+                runCatching {
+                    songRepository
+                        .getContinueTrack(
+                            playlistId = MyMixPrefs.YT_LIKED_PLAYLIST_ID,
+                            continuation = continuation,
+                            fromPlaylist = true,
+                        ).firstOrNull()
+                }.getOrNull() ?: return null
+            val tracks = page?.first
+            if (tracks.isNullOrEmpty()) {
+                // An empty page with more pages promised is a broken fetch, not the end.
+                return if (page?.second.isNullOrEmpty()) ids else null
+            }
+            tracks.forEach { ids.add(it.videoId) }
+            continuation = page?.second
+        }
+        return ids
+    }
+
+    /**
      * Fork: a cached track counts as spent once it has been played at all. Only spent tracks
      * rotate out of a sticky plan — an unplayed track that merely fell out of the fresh radio
      * stays cached, so the counter cannot drop "from nothing".
@@ -203,7 +258,11 @@ class MyMixCacheWorker(
     }
 
     private suspend fun isDue(intervalDays: Int): Boolean {
-        val last = dataStoreManager.getString(MyMixPrefs.LAST_CACHE_AT).first()?.toLongOrNull() ?: return true
+        val last = dataStoreManager.getString(MyMixPrefs.LAST_CACHE_AT).first()?.toLongOrNull()
+            ?: run {
+                dataStoreManager.putString(MyMixPrefs.LAST_CACHE_AT, Clock.System.now().toEpochMilliseconds().toString())
+                return false
+            }
         val elapsed = Clock.System.now().toEpochMilliseconds() - last
         return elapsed >= intervalDays.days.inWholeMilliseconds
     }
@@ -226,7 +285,9 @@ class MyMixCacheWorker(
             ?: mixes.firstOrNull()?.browseId
     }
 
-    private suspend fun fetchTracks(browseId: String) =
+    private suspend fun fetchTracks(browseId: String, targetCount: Int = 100): List<com.maxrave.domain.data.model.browse.album.Track> {
+        val result = mutableListOf<com.maxrave.domain.data.model.browse.album.Track>()
+        var continuation: String? = null
         if (browseId.isRadioPlaylistId()) {
             val resource =
                 playlistRepository
@@ -236,7 +297,9 @@ class MyMixCacheWorker(
                         radioString = "Radio",
                         viewString = "views",
                     ).firstOrNull { it is Resource.Success<*> }
-            (resource as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)?.data?.first?.tracks.orEmpty()
+            val pair = (resource as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)?.data
+            pair?.first?.tracks?.let { result.addAll(it) }
+            continuation = pair?.second
         } else {
             val resource =
                 playlistRepository
@@ -244,8 +307,33 @@ class MyMixCacheWorker(
                         playlistId = browseId,
                         viewString = "views",
                     ).firstOrNull { it is Resource.Success<*> }
-            (resource as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)?.data?.first?.tracks.orEmpty()
+            val pair = (resource as? Resource.Success<Pair<com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse, String?>>)?.data
+            pair?.first?.tracks?.let { result.addAll(it) }
+            continuation = pair?.second
         }
+
+        // Fetch continuation pages if targetCount exceeds initial page size
+        var pages = 0
+        while (result.size < targetCount && !continuation.isNullOrEmpty() && pages < 10) {
+            pages++
+            val cont = continuation
+            val continueRes = runCatching {
+                songRepository.getContinueTrack(
+                    playlistId = browseId,
+                    continuation = cont,
+                    fromPlaylist = !browseId.isRadioPlaylistId(),
+                ).firstOrNull()
+            }.getOrNull()
+            val newTracks = continueRes?.first
+            if (!newTracks.isNullOrEmpty()) {
+                result.addAll(newTracks)
+                continuation = continueRes.second
+            } else {
+                break
+            }
+        }
+        return result
+    }
 
     companion object {
         private const val TAG = "MyMixCacheWorker"

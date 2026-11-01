@@ -19,8 +19,20 @@ android {
     namespace = "com.maxrave.simpmusic"
     compileSdk = 37
 
+    signingConfigs {
+        create("apktoolm") {
+            storeFile = file("testkey.jks")
+            storePassword = "android"
+            keyAlias = "testkey"
+            keyPassword = "android"
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
+
     defaultConfig {
-        applicationId = "com.maxrave.simpmusic"
+        applicationId = "cn.kuwo.player"
         minSdk = 26
         targetSdk = 36
         versionCode =
@@ -77,6 +89,7 @@ android {
 
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("apktoolm")
             // Fork: R8 and resource shrinking are off. They were the single largest cost of the CI
             // build (`:androidApp:minifyReleaseWithR8` alone was 227 s of ~500 s), and this is a
             // personal build published to our own Releases, so the trade is deliberate: the APK grows
@@ -98,9 +111,8 @@ android {
             }
         }
         debug {
+            signingConfig = signingConfigs.getByName("apktoolm")
             isMinifyEnabled = false
-            applicationIdSuffix = ".dev"
-            versionNameSuffix = "-dev"
         }
     }
     compileOptions {

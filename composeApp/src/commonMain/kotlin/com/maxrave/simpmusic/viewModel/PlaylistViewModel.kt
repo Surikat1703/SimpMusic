@@ -22,6 +22,7 @@ import com.maxrave.domain.repository.PlaylistRepository
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.collectLatestResource
+import com.maxrave.domain.utils.isLikedPlaylist
 import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.domain.utils.toListVideoId
 import com.maxrave.domain.utils.toPlaylistEntity
@@ -95,6 +96,7 @@ class PlaylistViewModel(
     private var collectDownloadedJob: Job? = null
     private var _downloadedList = MutableStateFlow<List<String>>(emptyList())
     val downloadedList: StateFlow<List<String>> = _downloadedList
+    val downloadedSongs = songRepository.getDownloadedSongs()
 
     private var playlistEntityJob: Job? = null
     private var newUpdateJob: Job? = null
@@ -123,24 +125,22 @@ class PlaylistViewModel(
                                                     }
                                                 }
                                             }
-                                            downloadUtils.downloads.collectLatest { downloads ->
+                                            downloadUtils.downloadTask.collectLatest { downloadTask ->
+                                                if (tracks.isEmpty()) return@collectLatest
                                                 var count = 0
-                                                tracks.forEachIndexed { index, track ->
-                                                    val trackDownloadState = downloads[track.videoId]?.first?.state
-                                                    val videoDownloadState =
-                                                        downloads[track.videoId]?.second?.state ?: DownloadHandler.State.STATE_COMPLETED
-                                                    if (trackDownloadState == DownloadHandler.State.STATE_DOWNLOADING ||
-                                                        videoDownloadState == DownloadHandler.State.STATE_DOWNLOADING
-                                                    ) {
-                                                        updatePlaylistDownloadState(id, STATE_DOWNLOADING)
-                                                    } else if (trackDownloadState == DownloadHandler.State.STATE_COMPLETED &&
-                                                        videoDownloadState == DownloadHandler.State.STATE_COMPLETED
-                                                    ) {
+                                                var isAnyDownloading = false
+                                                for (track in tracks) {
+                                                    val taskState = downloadTask[track.videoId]
+                                                    if (taskState == STATE_DOWNLOADING) {
+                                                        isAnyDownloading = true
+                                                    } else if (taskState == STATE_DOWNLOADED) {
                                                         count++
                                                     }
-                                                    if (count == tracks.size) {
-                                                        updatePlaylistDownloadState(id, STATE_DOWNLOADED)
-                                                    }
+                                                }
+                                                if (isAnyDownloading) {
+                                                    updatePlaylistDownloadState(id, STATE_DOWNLOADING)
+                                                } else if (count == tracks.size) {
+                                                    updatePlaylistDownloadState(id, STATE_DOWNLOADED)
                                                 }
                                             }
                                         }
@@ -209,7 +209,7 @@ class PlaylistViewModel(
                 emptyList()
             }
         val extras =
-            if (id == LIKED_PLAYLIST_ID) {
+            if (id.isLikedPlaylist()) {
                 // Fork: the Liked list must contain ONLY tracks from the YouTube
                 // Liked playlist — never the whole downloaded library (mix cache
                 // and other playlists included). Extras are the locally liked
@@ -246,6 +246,7 @@ class PlaylistViewModel(
             }
         }
     }
+
 
     private fun PlaylistEntity.toLocalPlaylistState(): PlaylistState =
         PlaylistState(
@@ -348,6 +349,16 @@ class PlaylistViewModel(
                                     val fetchedIds = fetched.map { it.videoId }.toSet()
                                     val local = localTracksFor(id).filter { it.videoId !in fetchedIds }
                                     _tracks.value = fetched + local
+                                    if (id.isLikedPlaylist()) {
+                                        viewModelScope.launch(Dispatchers.IO) {
+                                            runCatching {
+                                                val existingIds = dataStoreManager.getString(MyMixPrefs.YT_LIKED_IDS).firstOrNull().orEmpty()
+                                                    .split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                                                val combined = (existingIds + fetchedIds).toList()
+                                                dataStoreManager.putString(MyMixPrefs.YT_LIKED_IDS, combined.joinToString(","))
+                                            }
+                                        }
+                                    }
                                 } else if (_tracks.value.isEmpty()) {
                                     _tracks.value = localTracksFor(id)
                                 }
@@ -381,23 +392,36 @@ class PlaylistViewModel(
                         continuation,
                         fromPlaylist = true,
                     ).collectLatest { res ->
-                        res.first?.forEach { track ->
-                            songRepository
-                                .insertSong(
-                                    track
-                                        .toSongEntity()
-                                        .copy(
-                                            inLibrary = Config.REMOVED_SONG_DATE_TIME,
-                                        ),
-                                ).singleOrNull()
-                                ?.let {
-                                    log("Insert song: $it")
-                                }
+                        val newTracks = res.first ?: emptyList()
+                        if (newTracks.isNotEmpty()) {
+                            val entities = newTracks.map {
+                                it.toSongEntity().copy(inLibrary = Config.REMOVED_SONG_DATE_TIME)
+                            }
+                            songRepository.insertSongs(entities)
                         }
                         _tracks.update {
                             val newList = it.toMutableList()
-                            newList.addAll(res.first ?: emptyList())
+                            newList.addAll(newTracks)
                             newList
+                        }
+                        if (newTracks.isNotEmpty()) {
+                            val currentTracks = _tracks.value
+                            _playlistEntity.value?.let { entity ->
+                                val updated = entity.copy(
+                                    tracks = currentTracks.toListVideoId(),
+                                    trackCount = currentTracks.size,
+                                )
+                                _playlistEntity.value = updated
+                                playlistRepository.insertAndReplacePlaylist(updated)
+                            }
+                            if (playlistId.isLikedPlaylist()) {
+                                runCatching {
+                                    val newIds = newTracks.map { it.videoId }
+                                    val existing = dataStoreManager.getString(MyMixPrefs.YT_LIKED_IDS).firstOrNull().orEmpty()
+                                        .split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                                    dataStoreManager.putString(MyMixPrefs.YT_LIKED_IDS, (existing + newIds).joinToString(","))
+                                }
+                            }
                         }
                         if (res.second.isNullOrEmpty()) {
                             _continuation.value = null
@@ -420,44 +444,44 @@ class PlaylistViewModel(
             viewModelScope.launch {
                 val playlistEntity = playlistRepository.getPlaylist(id).firstOrNull()
                 if (playlistBrowse != null) {
-                    if (playlistEntity == null) {
-                        // Fork: never write an empty track list over the cache.
-                        if (playlistBrowse.tracks.isEmpty() && _tracks.value.isNotEmpty()) {
-                            _tracksListState.value = ListState.PAGINATION_EXHAUST
-                            return@launch
-                        }
-                        playlistRepository.insertAndReplacePlaylist(
-                            playlistBrowse.toPlaylistEntity(),
+                    val entityToSave = if (playlistEntity != null) {
+                        // Keep whatever tracks we have accumulated in memory
+                        val combinedTracks = if (_tracks.value.isNotEmpty()) _tracks.value.toListVideoId() else playlistBrowse.tracks.toListVideoId()
+                        playlistEntity.copy(
+                            tracks = combinedTracks,
+                            trackCount = combinedTracks.size,
+                            thumbnails = playlistBrowse.thumbnails.lastOrNull()?.url ?: playlistEntity.thumbnails,
+                            title = playlistBrowse.title.ifEmpty { playlistEntity.title },
                         )
-                        delay(500)
-                        playlistRepository.getPlaylist(id).collectLatest { playlist ->
-                            _playlistEntity.value = playlist
-                            playlistRepository.updatePlaylistInLibrary(
-                                playlistId = id,
-                                inLibrary = now(),
-                            )
-                        }
                     } else {
-                        _playlistEntity.value = playlistEntity
-                        playlistRepository.updatePlaylistInLibrary(
-                            playlistId = id,
-                            inLibrary = now(),
-                        )
+                        val base = playlistBrowse.toPlaylistEntity()
+                        if (_tracks.value.isNotEmpty()) {
+                            base.copy(
+                                tracks = _tracks.value.toListVideoId(),
+                                trackCount = _tracks.value.size,
+                            )
+                        } else {
+                            base
+                        }
                     }
-                    playlistBrowse.tracks.forEach { tracks ->
-                        songRepository
-                            .insertSong(
-                                tracks.toSongEntity().copy(
-                                    inLibrary = Config.REMOVED_SONG_DATE_TIME,
-                                ),
-                            ).firstOrNull()
-                            ?.let {
-                                log("Insert song: $it")
-                            }
+                    if (entityToSave.tracks?.isNotEmpty() == true) {
+                        playlistRepository.insertAndReplacePlaylist(entityToSave)
+                    }
+                    _playlistEntity.value = entityToSave
+                    playlistRepository.updatePlaylistInLibrary(
+                        playlistId = id,
+                        inLibrary = now(),
+                    )
+                    if (playlistBrowse.tracks.isNotEmpty()) {
+                        val entities = playlistBrowse.tracks.map {
+                            it.toSongEntity().copy(inLibrary = Config.REMOVED_SONG_DATE_TIME)
+                        }
+                        songRepository.insertSongs(entities)
                     }
                 } else if (playlistEntity != null) {
                     _playlistEntity.value = playlistEntity
                     playlistRepository.updatePlaylistInLibrary(
+
                         playlistId = id,
                         inLibrary = now(),
                     )

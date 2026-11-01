@@ -216,7 +216,9 @@ private val listOfHomeChip =
         Res.string.focus,
     )
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
+private val sharedDominantCioClient by lazy { HttpClient(CIO) }
+
+@OptIn(ExperimentalMaterial3Api::class)
 @ExperimentalFoundationApi
 @Composable
 fun HomeScreen(
@@ -272,7 +274,7 @@ fun HomeScreen(
     }
     val animatedColor by animateColorAsState(topHeaderColor, tween(500))
     val mainHomeThumbnail by viewModel.mainHomeThumbnail.collectAsStateWithLifecycle()
-    val networkLoader = rememberNetworkLoader(HttpClient(CIO))
+    val networkLoader = rememberNetworkLoader(sharedDominantCioClient)
     val dominantColorState =
         rememberDominantColorState(
             defaultColor = backgroundColor,
@@ -531,9 +533,7 @@ fun HomeScreen(
 
     Box {
         PullToRefreshBox(
-            modifier =
-                Modifier
-                    .hazeSource(hazeState),
+            modifier = Modifier,
             state = pullToRefreshState,
             onRefresh = onRefresh,
             isRefreshing = isRefreshing,
@@ -807,10 +807,7 @@ fun HomeScreen(
                             if (target) {
                                 Modifier.background(Color.Transparent)
                             } else {
-                                Modifier
-                                    .hazeEffect(hazeState, style = HazeMaterials.ultraThin()) {
-                                        blurEnabled = true
-                                    }
+                                Modifier.background(MaterialTheme.colorScheme.background.copy(alpha = 0.96f))
                             },
                         ).onGloballyPositioned { coordinates ->
                             topAppBarHeightPx = coordinates.size.height

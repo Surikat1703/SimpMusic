@@ -298,7 +298,7 @@ fun LibraryDynamicPlaylistScreen(
                         } else {
                             data
                         },
-                        key = { it.hashCode() },
+                        key = { it.second.videoId },
                     ) { song ->
                         SongFullWidthItems(
                             songEntity = song.second,
@@ -398,7 +398,7 @@ fun LibraryDynamicPlaylistScreen(
                         }
                     }
                 },
-                key = { it.hashCode() },
+                key = { it.videoId },
             ) { song ->
                 SongFullWidthItems(
                     songEntity = song,

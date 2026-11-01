@@ -77,10 +77,11 @@ class MyMixCacheScheduler(
                 intervalDays.coerceAtLeast(1).toLong(),
                 TimeUnit.DAYS,
             ).setConstraints(constraints)
+                .setInitialDelay(intervalDays.coerceAtLeast(1).toLong(), TimeUnit.DAYS)
                 .addTag(WORK_TAG)
                 .build()
         Logger.d(TAG, "Scheduling My Mix cache every $intervalDays day(s)")
-        workManager.enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, request)
+        workManager.enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
     }
 
     private fun cancelPeriodic() {

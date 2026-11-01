@@ -27,7 +27,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.music_video
 import simpmusic.composeapp.generated.resources.new_release
@@ -87,14 +86,16 @@ class HomeViewModel(
     val mainHomeThumbnail: StateFlow<String?> = _mainHomeThumbnail
 
     init {
-        if (runBlocking { dataStoreManager.cookie.first() }.isEmpty() &&
-            runBlocking {
-                dataStoreManager.shouldShowLogInRequiredAlert.first() == TRUE
-            }
-        ) {
-            _showLogInAlert.update { true }
-        }
+        // PERF FIX: moved cookie/alert check off the main thread — runBlocking here was blocking
+        // ViewModel construction (and therefore the first frame) until DataStore I/O completed.
         homeJob = Job()
+        viewModelScope.launch {
+            val cookieEmpty = dataStoreManager.cookie.first().isEmpty()
+            val shouldShowAlert = dataStoreManager.shouldShowLogInRequiredAlert.first() == TRUE
+            if (cookieEmpty && shouldShowAlert) {
+                _showLogInAlert.update { true }
+            }
+        }
         viewModelScope.launch {
             regionCodeChart.value = dataStoreManager.chartKey.first()
             exploreChart(regionCodeChart.value ?: "ZZ")
@@ -182,15 +183,13 @@ class HomeViewModel(
     fun getHomeItemList(params: String? = null) {
         loading.value = true
         _homeListState.value = ListState.LOADING
-        language =
-            runBlocking {
-                dataStoreManager.getString(SELECTED_LANGUAGE).first()
-                    ?: SUPPORTED_LANGUAGE.codes.first()
-            }
-        regionCode = runBlocking { dataStoreManager.location.first() }
         homeJob?.cancel()
         homeJob =
             viewModelScope.launch {
+                language =
+                    dataStoreManager.getString(SELECTED_LANGUAGE).first()
+                        ?: SUPPORTED_LANGUAGE.codes.first()
+                regionCode = dataStoreManager.location.first()
                 combine(
                     homeRepository.getHomeData(
                         params,

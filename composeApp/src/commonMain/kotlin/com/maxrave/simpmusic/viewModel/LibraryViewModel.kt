@@ -29,6 +29,7 @@ import com.maxrave.simpmusic.ui.screen.library.LibraryDynamicPlaylistType
 import com.maxrave.simpmusic.viewModel.base.BaseViewModel
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -70,6 +71,7 @@ class LibraryViewModel(
     private val _recentlyAdded: MutableStateFlow<LocalResource<List<RecentlyType>>> =
         MutableStateFlow(LocalResource.Loading())
     val recentlyAdded: StateFlow<LocalResource<List<RecentlyType>>> get() = _recentlyAdded.asStateFlow()
+    private var recentlyAddedJob: Job? = null
 
     private val _yourLocalPlaylist: MutableStateFlow<LocalResource<List<LocalPlaylistEntity>>> =
         MutableStateFlow(LocalResource.Loading())
@@ -148,22 +150,16 @@ class LibraryViewModel(
 
     init {
         viewModelScope.launch {
-            val currentScreenJob =
-                launch {
-                    dataStoreManager.getString("library_current_screen").first()?.let { chipType ->
-                        LibraryChipType.fromStringValue(chipType)?.let {
-                            _currentScreen.value = it
-                        }
-                    }
+            dataStoreManager.getString("library_current_screen").first()?.let { chipType ->
+                LibraryChipType.fromStringValue(chipType)?.let {
+                    _currentScreen.value = it
                 }
-            val cookieJob =
-                launch {
-                    dataStoreManager.cookie.distinctUntilChanged().collect {
-                        _accountThumbnail.value = dataStoreManager.getString("AccountThumbUrl").first().takeIf { !it.isNullOrEmpty() }
-                    }
-                }
-            currentScreenJob.join()
-            cookieJob.join()
+            }
+        }
+        viewModelScope.launch {
+            dataStoreManager.cookie.distinctUntilChanged().collect {
+                _accountThumbnail.value = dataStoreManager.getString("AccountThumbUrl").first().takeIf { !it.isNullOrEmpty() }
+            }
         }
     }
 
@@ -175,7 +171,8 @@ class LibraryViewModel(
     }
 
     fun getRecentlyAdded() {
-        viewModelScope.launch {
+        recentlyAddedJob?.cancel()
+        recentlyAddedJob = viewModelScope.launch {
             commonRepository.getAllRecentData().collectLatest { data ->
                 val temp: MutableList<RecentlyType> = mutableListOf()
                 temp.addAll(data)

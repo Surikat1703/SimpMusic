@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -88,6 +89,7 @@ import com.maxrave.simpmusic.ui.icon.SimpIcons
 import com.maxrave.simpmusic.ui.theme.LocalForceDarkText
 import com.maxrave.simpmusic.ui.theme.seed
 import com.maxrave.simpmusic.ui.theme.typo
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
@@ -118,6 +120,7 @@ fun SongFullWidthItems(
     songEntity: SongEntity? = null,
     isPlaying: Boolean,
     shouldShowDragHandle: Boolean = false,
+    downloadState: Int? = null,
     onMoreClickListener: ((videoId: String) -> Unit)? = null,
     onClickListener: ((videoId: String) -> Unit)? = null,
     onAddToQueue: ((videoId: String) -> Unit)? = null,
@@ -134,13 +137,9 @@ fun SongFullWidthItems(
     val maxOffset = 360f
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val songRepository: SongRepository = koinInject<SongRepository>()
-    val downloadState by songRepository
-        .getSongAsFlow(songEntity?.videoId ?: track?.videoId ?: "")
-        .mapNotNull { it?.downloadState }
-        .collectAsState(initial = DownloadState.STATE_NOT_DOWNLOADED)
+    val itemVideoId = track?.videoId ?: songEntity?.videoId ?: ""
+    val resolvedDownloadState = downloadState ?: songEntity?.downloadState ?: DownloadState.STATE_NOT_DOWNLOADED
     val offsetX = remember { Animatable(initialValue = 0f) }
-    var heightDp by remember { mutableStateOf(0.dp) }
 
     Box(
         modifier =
@@ -153,7 +152,7 @@ fun SongFullWidthItems(
                 Box(
                     modifier =
                         Modifier
-                            .height(heightDp)
+                            .fillMaxHeight()
                             .aspectRatio(1f)
                             .padding(start = 15.dp)
                             .align(Alignment.CenterStart),
@@ -167,7 +166,6 @@ fun SongFullWidthItems(
                 }
             }
         }
-        val itemVideoId = track?.videoId ?: songEntity?.videoId ?: ""
         Box(
             modifier =
                 modifier
@@ -188,7 +186,7 @@ fun SongFullWidthItems(
                             } else {
                                 null
                             },
-                    ).animateContentSize()
+                    )
                     // Keyed on selectionMode so the swipe detector is torn down when selection
                     // starts — keyed on Unit it would keep running with the stale flag captured.
                     .pointerInput(selectionMode) {
@@ -215,10 +213,6 @@ fun SongFullWidthItems(
                                     }
                                 },
                             )
-                        }
-                    }.onGloballyPositioned { coordinates ->
-                        with(density) {
-                            heightDp = coordinates.size.height.toDp()
                         }
                     },
         ) {
@@ -316,15 +310,14 @@ fun SongFullWidthItems(
                                 .fillMaxWidth()
                                 .wrapContentHeight(align = Alignment.CenterVertically)
                                 .basicMarquee(
-                                    iterations = Int.MAX_VALUE,
-                                    animationMode = MarqueeAnimationMode.Immediately,
+                                    iterations = if (isPlaying) Int.MAX_VALUE else 0,
                                 ).focusable(),
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         AnimatedVisibility(
                             visible =
                                 if (songEntity != null || track != null) {
-                                    downloadState == DownloadState.STATE_DOWNLOADED
+                                    resolvedDownloadState == DownloadState.STATE_DOWNLOADED
                                 } else {
                                     false
                                 },
@@ -649,7 +642,6 @@ fun PlaylistFullWidthItems(
                                 .wrapContentHeight(align = Alignment.CenterVertically)
                                 .basicMarquee(
                                     iterations = Int.MAX_VALUE,
-                                    animationMode = MarqueeAnimationMode.Immediately,
                                 ).focusable(),
                     )
                 }
@@ -666,7 +658,6 @@ fun PlaylistFullWidthItems(
                                 .wrapContentHeight(align = Alignment.CenterVertically)
                                 .basicMarquee(
                                     iterations = Int.MAX_VALUE,
-                                    animationMode = MarqueeAnimationMode.Immediately,
                                 ).focusable(),
                     )
                 }

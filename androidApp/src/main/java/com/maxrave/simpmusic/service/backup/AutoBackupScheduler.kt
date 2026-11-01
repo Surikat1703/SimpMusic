@@ -59,12 +59,13 @@ class AutoBackupScheduler(
             intervalUnit
         )
             .setConstraints(constraints)
+            .setInitialDelay(intervalValue, intervalUnit)
             .addTag(WORK_TAG)
             .build()
 
         workManager.enqueueUniquePeriodicWork(
             WORK_NAME,
-            ExistingPeriodicWorkPolicy.UPDATE,
+            ExistingPeriodicWorkPolicy.KEEP,
             request
         )
 

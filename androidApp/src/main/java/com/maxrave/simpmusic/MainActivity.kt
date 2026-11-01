@@ -193,6 +193,7 @@ class MainActivity : AppCompatActivity() {
                 12L,
                 TimeUnit.HOURS,
             ).addTag("Worker Test")
+                .setInitialDelay(12L, TimeUnit.HOURS)
                 .setConstraints(
                     Constraints
                         .Builder()
@@ -212,6 +213,7 @@ class MainActivity : AppCompatActivity() {
                             24L,
                             TimeUnit.HOURS,
                         ).addTag("Blog RSS Worker")
+                            .setInitialDelay(24L, TimeUnit.HOURS)
                             .setConstraints(
                                 Constraints
                                     .Builder()

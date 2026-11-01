@@ -317,7 +317,9 @@ class SharedViewModel(
 //            controllerStateJob.join()
         }
 
-        runBlocking {
+        // PERF FIX: moved guide-flag reads off the main thread — runBlocking here was blocking
+        // SharedViewModel construction (and therefore the first frame).
+        viewModelScope.launch {
             dataStoreManager.getString("miniplayer_guide").first().let {
                 isFirstMiniplayer = it != STATUS_DONE
             }
@@ -948,8 +950,10 @@ class SharedViewModel(
     }
 
     fun getLocation() {
-        regionCode = runBlocking { dataStoreManager.location.first() }
-        language = runBlocking { dataStoreManager.getString(SELECTED_LANGUAGE).first() }
+        viewModelScope.launch(Dispatchers.IO) {
+            regionCode = dataStoreManager.location.first()
+            language = dataStoreManager.getString(SELECTED_LANGUAGE).first()
+        }
     }
 
     private fun checkAllDownloadingLocalPlaylists() {
@@ -1843,11 +1847,13 @@ class SharedViewModel(
      * can never open on a tab that is not in the bar.
      */
     fun resolveStartDestination(): Any =
-        DefaultTabPreference.destinationOf(
-            value = runBlocking { dataStoreManager.getString(DefaultTabPreference.KEY).firstOrNull() },
-            mixAvailable = runBlocking { dataStoreManager.loggedIn.firstOrNull() } == DataStoreManager.TRUE,
-            analyticsAvailable = runBlocking { dataStoreManager.localTrackingEnabled.firstOrNull() } == DataStoreManager.TRUE,
-        )
+        runBlocking(Dispatchers.IO) {
+            DefaultTabPreference.destinationOf(
+                value = dataStoreManager.getString(DefaultTabPreference.KEY).firstOrNull(),
+                mixAvailable = dataStoreManager.loggedIn.firstOrNull() == DataStoreManager.TRUE,
+                analyticsAvailable = dataStoreManager.localTrackingEnabled.firstOrNull() == DataStoreManager.TRUE,
+            )
+        }
 
     fun setDefaultTab(tab: String) {
         viewModelScope.launch {
@@ -1859,10 +1865,10 @@ class SharedViewModel(
     // the flow's own default. Seeding them synchronously is what keeps the default-tab setting from
     // being pushed back to Home by the first frame of the gate-fallback effect.
     fun isYouTubeLoggedInNow(): Boolean =
-        runBlocking { dataStoreManager.loggedIn.firstOrNull() } == DataStoreManager.TRUE
+        runBlocking(Dispatchers.IO) { dataStoreManager.loggedIn.firstOrNull() } == DataStoreManager.TRUE
 
     fun isLocalTrackingEnabledNow(): Boolean =
-        runBlocking { dataStoreManager.localTrackingEnabled.firstOrNull() } == DataStoreManager.TRUE
+        runBlocking(Dispatchers.IO) { dataStoreManager.localTrackingEnabled.firstOrNull() } == DataStoreManager.TRUE
 
     fun setThemeMode(mode: String) {
         viewModelScope.launch {

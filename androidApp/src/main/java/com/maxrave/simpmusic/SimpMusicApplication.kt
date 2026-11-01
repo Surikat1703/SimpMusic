@@ -12,6 +12,7 @@ import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
 import coil3.disk.DiskCache
+import coil3.memory.MemoryCache
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.CachePolicy
 import coil3.request.crossfade
@@ -25,11 +26,13 @@ import com.maxrave.simpmusic.service.mymix.MyMixCacheScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.firstOrNull
 import multiplatform.network.cmptoast.AppContext
 import okhttp3.OkHttpClient
 import okio.FileSystem
+import okio.Path.Companion.toOkioPath
 import org.koin.android.ext.koin.androidContext
 import org.koin.android.ext.koin.androidLogger
 import org.koin.core.component.KoinComponent
@@ -58,7 +61,7 @@ class SimpMusicApplication :
         configCrashlytics(this, BuildKonfig.sentryDsn)
         configLastfm(BuildKonfig.lastfmApiKey, BuildKonfig.lastfmSecret)
         startKoin {
-            androidLogger(level = Level.DEBUG)
+            androidLogger(level = Level.ERROR)
             androidContext(this@SimpMusicApplication)
             loadAllModules(
                 AppIdentity(
@@ -82,12 +85,14 @@ class SimpMusicApplication :
         // Initialize and start AutoBackupScheduler
         autoBackupScheduler = AutoBackupScheduler(this, dataStoreManager)
         applicationScope.launch {
+            delay(15000)
             autoBackupScheduler.observeAndSchedule()
         }
 
         // Initialize and start MyMixCacheScheduler
         myMixCacheScheduler = MyMixCacheScheduler(this, dataStoreManager)
         applicationScope.launch {
+            delay(15000)
             myMixCacheScheduler.observeAndSchedule()
         }
 
@@ -131,25 +136,35 @@ class SimpMusicApplication :
         Logger.w("Terminate", "Checking")
     }
 
+    private val sharedOkHttpClient by lazy {
+        OkHttpClient.Builder().build()
+    }
+
     override fun newImageLoader(context: PlatformContext): ImageLoader =
         ImageLoader
             .Builder(context)
             .components {
                 add(
                     OkHttpNetworkFetcherFactory(
-                        callFactory = {
-                            OkHttpClient()
-                        },
+                        callFactory = { sharedOkHttpClient },
                     ),
                 )
-            }.diskCachePolicy(CachePolicy.ENABLED)
+            }
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .memoryCache {
+                MemoryCache.Builder()
+                    .maxSizePercent(context, 0.25)
+                    .build()
+            }
+            .diskCachePolicy(CachePolicy.ENABLED)
             .networkCachePolicy(CachePolicy.ENABLED)
-            .diskCache(
+            .diskCache {
                 DiskCache
                     .Builder()
-                    .directory(FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "image_cache")
+                    .directory(cacheDir.resolve("image_cache").toOkioPath())
                     .maxSizeBytes(512L * 1024 * 1024)
-                    .build(),
-            ).crossfade(true)
+                    .build()
+            }
+            .crossfade(true)
             .build()
 }
