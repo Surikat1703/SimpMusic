@@ -738,7 +738,29 @@ fun MyMixScreen(
                     null
                 }
                 val pair = (fetched as? Resource.Success<Pair<PlaylistBrowse, String?>>)?.data
+                // Fork: page the liked list all the way down, not just its first hundred —
+                // the mood must run from the newest liked track to the end of the list. A
+                // failed or truncated page keeps whatever arrived; the local likes are still
+                // the fallback when nothing did. YouTube lists liked music newest first, so
+                // tracks.first() below is the last track the user added.
                 var tracks = ArrayList<Track>(pair?.first?.tracks.orEmpty())
+                var continuation = pair?.second
+                var pages = 0
+                while (!continuation.isNullOrEmpty() && pages < 20) {
+                    pages++
+                    val page =
+                        runCatching {
+                            songRepository.getContinueTrack(
+                                playlistId = MyMixPrefs.YT_LIKED_PLAYLIST_ID,
+                                continuation = continuation,
+                                fromPlaylist = true,
+                            ).first()
+                        }.getOrNull()
+                    val pageTracks = page?.first
+                    if (pageTracks.isNullOrEmpty()) break
+                    tracks.addAll(pageTracks)
+                    continuation = page?.second
+                }
                 if (tracks.isEmpty()) {
                     tracks = songRepository.getLikedSongs().first().toArrayListTrack()
                 }

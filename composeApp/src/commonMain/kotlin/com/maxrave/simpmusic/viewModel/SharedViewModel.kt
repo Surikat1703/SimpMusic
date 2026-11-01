@@ -1289,10 +1289,11 @@ class SharedViewModel(
         packageName: String,
         signingCerts: List<String>,
     ) {
-        if (packageName !in Config.OFFICIAL_PACKAGE_NAMES) {
-            _isOfficialBuild.value = false
-            return
-        }
+        // Fork: this fork is always signed with its own key (see FORK.md) and is never an
+        // upstream-official package, so the upstream lockout must not apply here. Treat every
+        // build of this fork as trusted.
+        _isOfficialBuild.value = true
+        return
         viewModelScope.launch {
             updateRepository.getFdroidSigningKeys().collect { response ->
                 val keys = response.data

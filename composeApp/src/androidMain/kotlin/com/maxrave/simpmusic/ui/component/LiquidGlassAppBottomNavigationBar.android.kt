@@ -106,6 +106,12 @@ actual fun LiquidGlassAppBottomNavigationBar(
     }
 
     val currentBackStackEntry by navController.currentBackStackEntryAsState()
+
+    // Fork: the Mix tab has its own in-tab player, so the mini player this bar draws must
+    // disappear while that tab is in front - the same rule App.kt applies to its own copy.
+    val isOnMixTab = currentBackStackEntry?.destination?.hierarchy?.any {
+        it.hasRoute(MixForYouDestination::class)
+    } == true
     val bottomNavScreens =
         listOfNotNull(
             BottomNavScreen.Home,
@@ -342,7 +348,7 @@ actual fun LiquidGlassAppBottomNavigationBar(
                     .height(56.dp)
                     .layoutId("miniPlayer"),
                 backdrop = backdrop,
-                isVisible = isShowMiniPlayer,
+                isVisible = isShowMiniPlayer && !isOnMixTab,
                 onClick = {
                     onOpenNowPlaying()
                 },
