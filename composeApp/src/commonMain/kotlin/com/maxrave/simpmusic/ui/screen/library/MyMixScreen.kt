@@ -61,6 +61,8 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,6 +70,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -130,13 +133,8 @@ import simpmusic.composeapp.generated.resources.my_mix_skip_wait
 import simpmusic.composeapp.generated.resources.my_mix_you_are_offline
 import simpmusic.composeapp.generated.resources.radio
 import simpmusic.composeapp.generated.resources.view_count
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.YouTubeLikeStatus
@@ -145,7 +143,6 @@ import com.maxrave.domain.utils.toArrayListTrack
 import com.maxrave.simpmusic.extension.formatDuration
 import com.maxrave.simpmusic.ui.icon.Check
 import com.maxrave.simpmusic.ui.icon.PlaylistAdd
-import com.maxrave.simpmusic.ui.icon.Close
 import com.maxrave.simpmusic.ui.icon.SkipNext
 import com.maxrave.simpmusic.ui.icon.SkipPrevious
 import com.maxrave.simpmusic.ui.icon.MoreVert
@@ -436,7 +433,6 @@ fun MyMixScreen(
 
     var isPreparing by remember { mutableStateOf(false) }
     var playFailed by remember { mutableStateOf(false) }
-    var showAllMoods by remember { mutableStateOf(false) }
 
     // Fork: the transport state carried by the Flow goes stale while the app is in the background — the
     // player keeps playing, but no isPlaying change is delivered, so coming back showed a paused track
@@ -1111,7 +1107,6 @@ fun MyMixScreen(
             val likesPalette = MOOD_PALETTES[moodMixes.size % MOOD_PALETTES.size]
             val supermixSelected = !isLikesSelected && (offline || superMix?.browseId == selectedMix?.browseId)
             val likesSelected = isLikesSelected
-            val allMoodsAvailable = !offline || moodMixes.isNotEmpty()
 
             Row(
                 // Three cards share the full width of the screen: no horizontal scrolling, so the
@@ -1121,12 +1116,19 @@ fun MyMixScreen(
                     .padding(start = 14.dp, end = 14.dp, bottom = 18.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // 1) "Мой супермикс"
+                // 1) "Мой супермикс" — serif bold, letterSpacing 0.02 em, 12 sp, centered horizontally and vertically
                 val supermixLabel = stringResource(Res.string.my_mix_supermix)
                 MoodCard(
                     label = supermixLabel,
                     primaryColor = fieldColor,
                     secondaryColor = waveSecondary,
+                    labelAlignment = Alignment.Center,
+                    labelStyle = typo().bodySmall.copy(
+                        fontFamily = FontFamily.Serif,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.02.em,
+                        fontSize = 12.sp,
+                    ),
                     selected = supermixSelected,
                     onClick = {
                         if (offline) {
@@ -1141,7 +1143,7 @@ fun MyMixScreen(
                     },
                 )
 
-                // 2) "Любимые треки"
+                // 2) "Любимые треки" — cursive normal, 12 sp, centered handwritten heart caption
                 val likesLabel = stringResource(Res.string.my_mix_no_mood)
                 MoodCard(
                     label = likesLabel,
@@ -1149,6 +1151,11 @@ fun MyMixScreen(
                     secondaryColor = likesPalette.second,
                     shape = HeartShape,
                     labelAlignment = Alignment.Center,
+                    labelStyle = typo().bodySmall.copy(
+                        fontFamily = FontFamily.Cursive,
+                        fontWeight = FontWeight.Normal,
+                        fontSize = 12.sp,
+                    ),
                     selected = likesSelected,
                     onClick = {
                         selectedMoodId = LIKES_MOOD_ID
@@ -1157,7 +1164,7 @@ fun MyMixScreen(
                     },
                 )
 
-                // 3) "Все настроения"
+                // 3) "Все настроения" — monospace medium, letterSpacing 0.04 em, 10.5 sp, opens stock shelf
                 val allMoodsLabel = stringResource(Res.string.my_mix_all_moods)
                 val allMoodsCollageUrls = remember(moodMixes) {
                     moodMixes.take(4).map { it.thumbnails.lastOrNull()?.url }
@@ -1167,35 +1174,22 @@ fun MyMixScreen(
                     primaryColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     secondaryColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                     shape = BlobShape,
+                    labelAlignment = Alignment.Center,
+                    labelStyle = typo().bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 0.04.em,
+                        fontSize = 10.5.sp,
+                    ),
                     selected = false,
                     alpha = if (offline) 0.45f else 1f,
                     collageUrls = allMoodsCollageUrls,
                     onClick = {
-                        if (allMoodsAvailable) {
-                            showAllMoods = true
-                        }
+                        // Fork: navigate directly to the stock YouTube-Music-style shelf of mixes
+                        navController.navigate(MixForYouOriginalDestination)
                     },
                 )
             }
-        }
-
-        if (showAllMoods) {
-            MyMixMoodPicker(
-                moods = moodMixes,
-                selectedId = selectedMoodId,
-                onSelect = { id ->
-                    selectedMoodId = id
-                    scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, id) }
-                    showAllMoods = false
-                    // Same rule as the row itself: choosing a mood starts it.
-                    if (id == LIKES_MOOD_ID) {
-                        playLikes()
-                    } else {
-                        allMixes.firstOrNull { it.browseId == id }?.let { playMix(it) }
-                    }
-                },
-                onDismiss = { showAllMoods = false },
-            )
         }
 
         // Fork: the stuck-track watchdog. Confirm or the countdown skips to the next track;
@@ -1228,113 +1222,6 @@ fun MyMixScreen(
     }
 }
 
-/**
- * Fork: the mood row only has space for what fits; this is the same shelf on a page of its own.
- */
-@Composable
-private fun MyMixMoodPicker(
-    moods: List<PlaylistsResult>,
-    selectedId: String?,
-    onSelect: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.surface,
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(18.dp),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = stringResource(Res.string.my_mix_all_moods),
-                        style = typo().titleLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = SimpIcons.Close,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                }
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    item(key = "liked") {
-                        MoodGridTile(
-                            title = stringResource(Res.string.my_mix_no_mood),
-                            artwork = null,
-                            selected = selectedId == LIKES_MOOD_ID,
-                            onClick = { onSelect(LIKES_MOOD_ID) },
-                        )
-                    }
-                    items(items = moods, key = { it.browseId }) { mix ->
-                        MoodGridTile(
-                            title = cleanMoodName(mix.title).ifBlank { mix.title },
-                            artwork = mix.thumbnails.lastOrNull()?.url,
-                            selected = mix.browseId == selectedId,
-                            onClick = { onSelect(mix.browseId) },
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MoodGridTile(
-    title: String,
-    artwork: String?,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .clip(RoundedCornerShape(18.dp))
-            .clickable { onClick() },
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        AsyncImage(
-            model = artwork,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(18.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
-            contentDescription = title,
-        )
-        Text(
-            text = title,
-            style = typo().bodyMedium,
-            color = if (selected) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            },
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
 
 /**
  * Fork: the in-tab player. The stock mini player is hidden on this tab, so the hero carries a full
@@ -1795,10 +1682,11 @@ private fun MoodCard(
     secondaryColor: Color,
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(24.dp),
-    // The heart and the blob both narrow towards their bottom, so their label lives in the middle,
-    // where the shape is widest; only the rounded rectangle keeps a bottom-start label.
-    labelAlignment: Alignment =
-        if (shape === HeartShape || shape === BlobShape) Alignment.Center else Alignment.BottomStart,
+    // All cards now render centered labels. The heart and blob shapes narrow towards their bottom,
+    // so their labels keep an offset to sit in the wider upper center, while the rounded rectangle
+    // centers horizontally and vertically with 12 dp horizontal padding.
+    labelAlignment: Alignment = Alignment.Center,
+    labelStyle: TextStyle = typo().bodySmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
     selected: Boolean = false,
     alpha: Float = 1f,
     collageUrls: List<String?>? = null,
@@ -1857,11 +1745,19 @@ private fun MoodCard(
             }
 
             val isCentered = labelAlignment == Alignment.Center
+            // Heart and blob shapes narrow towards their bottom; keeping 8 dp horizontal padding
+            // and a 12 dp bottom offset keeps the text in the widest part. The rounded-rectangle
+            // card uses 12 dp horizontal padding and zero bottom offset to stay centered both
+            // horizontally and vertically.
+            val isOrganicShape = shape === HeartShape || shape === BlobShape
+            val horizontalPadding = if (isOrganicShape) 8.dp else 12.dp
+            val bottomPadding = if (isOrganicShape && isCentered) 12.dp else if (isCentered) 0.dp else 8.dp
             Text(
                 text = label,
-                // Shared 11 sp font size with maxLines = 2 and softWrap = true ensures words like
-                // "настроения" fit on a single line (86 dp inner width vs ~60 dp text width).
-                style = typo().bodySmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                // Each card renders its own distinct typeface and metrics passed via [labelStyle].
+                // Shared softWrap = true and maxLines = 2 ensures words like "настроения" fit
+                // on a single line (86 dp inner width vs ~63 dp monospace text width).
+                style = labelStyle,
                 color = Color.White,
                 maxLines = 2,
                 softWrap = true,
@@ -1870,9 +1766,9 @@ private fun MoodCard(
                 modifier = Modifier
                     .align(labelAlignment)
                     .padding(
-                        start = 8.dp,
-                        end = 8.dp,
-                        bottom = if (isCentered) 12.dp else 8.dp,
+                        start = horizontalPadding,
+                        end = horizontalPadding,
+                        bottom = bottomPadding,
                     ),
             )
         }
