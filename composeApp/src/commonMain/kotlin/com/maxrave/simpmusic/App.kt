@@ -186,10 +186,12 @@ fun App(
 
     // Fork: the My Mix tab carries a player of its own, so the stock mini player is hidden there —
     // otherwise the two would stack and say the same thing twice.
+    // Falls back to startDestination on the very first frame before backstack commits.
+    val currentBackStackEntry by navController.currentBackStackEntryAsState()
     val isOnMixTab =
-        navController.currentBackStackEntryAsState().value?.destination?.hierarchy?.any {
+        currentBackStackEntry?.destination?.hierarchy?.any {
             it.hasRoute(MixForYouDestination::class)
-        } == true
+        } ?: (startDestination is MixForYouDestination)
 
     val themeMode by viewModel.getThemeMode().collectAsStateWithLifecycle(DataStoreManager.THEME_MODE_DARK)
     val themeColorSource by viewModel.getThemeColorSource().collectAsStateWithLifecycle(DataStoreManager.THEME_COLOR_DEFAULT)
@@ -608,6 +610,7 @@ fun App(
                             }
                             if (useFoldingBar) {
                                 LiquidGlassAppBottomNavigationBar(
+                                    startDestination = startDestination,
                                     navController = navController,
                                     backdrop = backdrop,
                                     viewModel = viewModel,

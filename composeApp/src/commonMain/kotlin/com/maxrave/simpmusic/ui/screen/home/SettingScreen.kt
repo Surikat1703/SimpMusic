@@ -106,7 +106,10 @@ import com.maxrave.domain.data.model.lyrics.RomanizationDictionaryState
 import com.maxrave.domain.data.model.lyrics.RomanizationLanguage
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
+import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.repository.ImportProgress
+import com.maxrave.domain.repository.PlaylistRepository
+import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.LocalResource
 import com.maxrave.logger.Logger
 import com.maxrave.simpmusic.Platform
@@ -137,6 +140,7 @@ import com.maxrave.simpmusic.ui.icon.Error
 import com.maxrave.simpmusic.ui.icon.PeopleAlt
 import com.maxrave.simpmusic.ui.icon.PlaylistAdd
 import com.maxrave.simpmusic.ui.icon.SimpIcons
+import com.maxrave.simpmusic.ui.screen.library.MyMixPrefs
 import com.maxrave.simpmusic.ui.navigation.destination.home.AppLogDestination
 import com.maxrave.simpmusic.ui.navigation.destination.home.CreditDestination
 import com.maxrave.simpmusic.ui.navigation.destination.login.DiscordLoginDestination
@@ -164,6 +168,10 @@ import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -171,6 +179,7 @@ import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.format
 import kotlinx.datetime.format.FormatStringsInDatetimeFormats
 import kotlinx.datetime.format.byUnicodePattern
+import kotlin.time.Clock
 import org.jetbrains.compose.resources.getString
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.koinInject
@@ -224,6 +233,7 @@ import simpmusic.composeapp.generated.resources.better_lyrics
 import simpmusic.composeapp.generated.resources.blog_notification_description
 import simpmusic.composeapp.generated.resources.blog_notification_title
 import simpmusic.composeapp.generated.resources.buy_me_a_coffee
+import simpmusic.composeapp.generated.resources.delete
 import simpmusic.composeapp.generated.resources.cancel
 import simpmusic.composeapp.generated.resources.animated_artwork_info
 import simpmusic.composeapp.generated.resources.canvas_info
@@ -456,6 +466,17 @@ import simpmusic.composeapp.generated.resources.youtube_account
 import simpmusic.composeapp.generated.resources.youtube_subtitle_language
 import simpmusic.composeapp.generated.resources.youtube_subtitle_language_message
 import simpmusic.composeapp.generated.resources.youtube_transcript
+import simpmusic.composeapp.generated.resources.my_mix_auto_cache
+import simpmusic.composeapp.generated.resources.my_mix_cache_count
+import simpmusic.composeapp.generated.resources.my_mix_cache_interval
+import simpmusic.composeapp.generated.resources.my_mix_cache_now
+import simpmusic.composeapp.generated.resources.my_mix_cache_settings
+import simpmusic.composeapp.generated.resources.my_mix_cached_count
+import simpmusic.composeapp.generated.resources.orphan_downloads
+import simpmusic.composeapp.generated.resources.orphan_downloads_count
+import simpmusic.composeapp.generated.resources.orphan_downloads_none
+import simpmusic.composeapp.generated.resources.orphan_downloads_title
+import simpmusic.composeapp.generated.resources.orphan_downloads_unknown
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -2596,6 +2617,226 @@ fun SettingScreen(
                         Text(text = stringResource(Res.string.free_space), style = typo().bodySmall)
                     }
                     Spacer(Modifier.height(12.dp))
+                }
+            }
+        }
+        // Fork: My Mix auto-cache settings moved here from MyMixScreen so the Mix tab can become a
+        // non-scrolling page. The keys and defaults are owned by MyMixPrefs in MyMixScreen.kt and
+        // must never be duplicated here — import the object, never copy the string literals.
+        if (getPlatform() == Platform.Android) {
+            item(key = "my_mix_cache") {
+                // Local state read once on entry; written back on every user action.
+                val myMixScope = rememberCoroutineScope()
+                val myMixDataStore: DataStoreManager = koinInject()
+                val myMixDownloadHandler: DownloadHandler = koinInject()
+                val myMixSongRepo: SongRepository = koinInject()
+
+                var myMixEnabled by remember { mutableStateOf(false) }
+                var myMixTrackCount by remember { mutableStateOf(MyMixPrefs.DEFAULT_COUNT) }
+                var myMixIntervalDays by remember { mutableStateOf(MyMixPrefs.DEFAULT_INTERVAL_DAYS) }
+                var myMixPlannedCount by remember { mutableStateOf(0) }
+                var myMixDownloadedCount by remember { mutableStateOf(0) }
+
+                LaunchedEffect(Unit) {
+                    myMixEnabled = myMixDataStore.getString(MyMixPrefs.AUTO_CACHE).first() == DataStoreManager.TRUE
+                    myMixTrackCount = myMixDataStore.getString(MyMixPrefs.CACHE_COUNT).first()?.toIntOrNull()
+                        ?: MyMixPrefs.DEFAULT_COUNT
+                    myMixIntervalDays = myMixDataStore.getString(MyMixPrefs.CACHE_INTERVAL_DAYS).first()?.toIntOrNull()
+                        ?: MyMixPrefs.DEFAULT_INTERVAL_DAYS
+                }
+
+                // Fork: "downloaded N of M" is answered from the cache worker's own plan (CACHED_IDS)
+                // crossed with the songs actually on disk, so it cannot drift from what the worker
+                // decided. downloadTask fires very frequently during batch downloads; debounce it to
+                // 2 s so Room isn't queried on every single tick.
+                @OptIn(kotlinx.coroutines.FlowPreview::class)
+                LaunchedEffect(Unit) {
+                    combine(
+                        myMixDataStore.getString(MyMixPrefs.CACHED_IDS).distinctUntilChanged(),
+                        myMixDownloadHandler.downloadTask.debounce(2_000),
+                    ) { raw, _ -> raw }
+                        .collect { raw ->
+                            val ids = raw.orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                            myMixPlannedCount = ids.size
+                            myMixDownloadedCount = if (ids.isEmpty()) {
+                                0
+                            } else {
+                                runCatching {
+                                    myMixSongRepo.getDownloadedVideoIdListFromListVideoIdAsFlow(ids).first().size
+                                }.getOrDefault(0)
+                            }
+                        }
+                }
+
+                SettingGroup(title = stringResource(Res.string.my_mix_cache_settings)) {
+                    // Switch: enable / disable automatic caching entirely.
+                    SettingItem(
+                        title = stringResource(Res.string.my_mix_auto_cache),
+                        // "Downloaded N of M" — always visible so the count is readable at a glance
+                        // without expanding anything.
+                        subtitle = "${stringResource(Res.string.my_mix_cached_count)} $myMixDownloadedCount / $myMixPlannedCount",
+                        switch = myMixEnabled to { value ->
+                            myMixEnabled = value
+                            myMixScope.launch {
+                                myMixDataStore.putString(
+                                    MyMixPrefs.AUTO_CACHE,
+                                    if (value) DataStoreManager.TRUE else DataStoreManager.FALSE,
+                                )
+                            }
+                        },
+                    )
+                    // Picker: how many tracks to cache (presets 25 / 50 / 100 / 200 / 300 / 500,
+                    // clamped 10..500).
+                    SettingItem(
+                        title = stringResource(Res.string.my_mix_cache_count),
+                        subtitle = myMixTrackCount.toString(),
+                        isEnable = myMixEnabled,
+                        onClick = {
+                            viewModel.setAlertData(
+                                SettingAlertState(
+                                    title = runBlocking { getString(Res.string.my_mix_cache_count) },
+                                    selectOne = SettingAlertState.SelectData(
+                                        listSelect = listOf(25, 50, 100, 200, 300, 500).map { preset ->
+                                            (preset == myMixTrackCount) to preset.toString()
+                                        },
+                                    ),
+                                    confirm = runBlocking { getString(Res.string.change) } to { state ->
+                                        val selected = state.selectOne?.getSelected()?.toIntOrNull()
+                                            ?: myMixTrackCount
+                                        val clamped = selected.coerceIn(10, 500)
+                                        myMixTrackCount = clamped
+                                        myMixScope.launch {
+                                            myMixDataStore.putString(MyMixPrefs.CACHE_COUNT, clamped.toString())
+                                        }
+                                    },
+                                    dismiss = runBlocking { getString(Res.string.cancel) },
+                                ),
+                            )
+                        },
+                    )
+                    // Picker: refresh interval in days (presets 1 / 3 / 7 / 14 / 30, clamped 1..30).
+                    SettingItem(
+                        title = stringResource(Res.string.my_mix_cache_interval),
+                        subtitle = myMixIntervalDays.toString(),
+                        isEnable = myMixEnabled,
+                        onClick = {
+                            viewModel.setAlertData(
+                                SettingAlertState(
+                                    title = runBlocking { getString(Res.string.my_mix_cache_interval) },
+                                    selectOne = SettingAlertState.SelectData(
+                                        listSelect = listOf(1, 3, 7, 14, 30).map { preset ->
+                                            (preset == myMixIntervalDays) to preset.toString()
+                                        },
+                                    ),
+                                    confirm = runBlocking { getString(Res.string.change) } to { state ->
+                                        val selected = state.selectOne?.getSelected()?.toIntOrNull()
+                                            ?: myMixIntervalDays
+                                        val clamped = selected.coerceIn(1, 30)
+                                        myMixIntervalDays = clamped
+                                        myMixScope.launch {
+                                            myMixDataStore.putString(MyMixPrefs.CACHE_INTERVAL_DAYS, clamped.toString())
+                                        }
+                                    },
+                                    dismiss = runBlocking { getString(Res.string.cancel) },
+                                ),
+                            )
+                        },
+                    )
+                    // Action: trigger an immediate cache refresh by writing a unique timestamp into
+                    // CACHE_REQUEST — the same mechanism the old Mix tab's button used.
+                    SettingItem(
+                        title = stringResource(Res.string.my_mix_cache_now),
+                        subtitle = "",
+                        isEnable = myMixEnabled,
+                        onClick = {
+                            myMixScope.launch {
+                                myMixDataStore.putString(
+                                    MyMixPrefs.CACHE_REQUEST,
+                                    Clock.System.now().toEpochMilliseconds().toString(),
+                                )
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        // Fork: downloads outlive their owner. A track downloaded from a playlist, from a mix or one by
+        // one stays on disk after that playlist is gone, and until now nothing in the app listed them —
+        // the library only ever said "2056 songs downloaded". This row counts exactly those: downloaded,
+        // referenced by no playlist, and absent from the My Mix cache plan. It deletes only after an
+        // explicit confirmation, because a single downloaded track is a legitimate state.
+        if (getPlatform() == Platform.Android) {
+            item(key = "orphan_downloads") {
+                val orphanScope = rememberCoroutineScope()
+                val orphanSongRepo: SongRepository = koinInject()
+                val orphanPlaylistRepo: PlaylistRepository = koinInject()
+                val orphanDownloadHandler: DownloadHandler = koinInject()
+                val orphanDataStore: DataStoreManager = koinInject()
+                var orphanIds by remember { mutableStateOf<List<String>>(emptyList()) }
+                var orphanUnknown by remember { mutableStateOf(false) }
+
+                LaunchedEffect(Unit) {
+                    runCatching {
+                        val plan =
+                            orphanDataStore
+                                .getString(MyMixPrefs.CACHED_IDS)
+                                .first()
+                                .orEmpty()
+                                .split(",")
+                                .map { it.trim() }
+                                .filter { it.isNotEmpty() }
+                                .toSet()
+                        val playlists = orphanPlaylistRepo.getAllPlaylists(500).first()
+                        // A playlist whose `tracks` were never loaded would make every song in it look
+                        // ownerless, so nothing is reported until the whole set is complete.
+                        orphanUnknown = playlists.any { it.tracks == null }
+                        if (!orphanUnknown) {
+                            val owned = playlists.flatMap { it.tracks.orEmpty() }.toSet()
+                            orphanIds =
+                                orphanSongRepo
+                                    .getDownloadedSongs()
+                                    .first()
+                                    .orEmpty()
+                                    .map { it.videoId }
+                                    .filter { it !in owned && it !in plan }
+                        }
+                    }.onFailure { orphanUnknown = true }
+                }
+
+                SettingGroup(title = stringResource(Res.string.orphan_downloads_title)) {
+                    SettingItem(
+                        title = stringResource(Res.string.orphan_downloads),
+                        subtitle =
+                            when {
+                                orphanUnknown -> stringResource(Res.string.orphan_downloads_unknown)
+                                orphanIds.isEmpty() -> stringResource(Res.string.orphan_downloads_none)
+                                else -> "${orphanIds.size} " + stringResource(Res.string.orphan_downloads_count)
+                            },
+                        onClick =
+                            if (orphanIds.isEmpty()) {
+                                null
+                            } else {
+                                {
+                                    viewModel.setBasicAlertData(
+                                        SettingBasicAlertState(
+                                            title = runBlocking { getString(Res.string.orphan_downloads) },
+                                            message = "${orphanIds.size}",
+                                            confirm =
+                                                runBlocking { getString(Res.string.delete) } to {
+                                                    val targets = orphanIds
+                                                    orphanIds = emptyList()
+                                                    orphanScope.launch {
+                                                        targets.forEach { id ->
+                                                            runCatching { orphanDownloadHandler.removeDownload(id) }
+                                                        }
+                                                    }
+                                                },
+                                            dismiss = runBlocking { getString(Res.string.cancel) },
+                                        ),
+                                    )
+                                }
+                            },
+                    )
                 }
             }
         }

@@ -662,6 +662,12 @@
     <string name="my_mix_open_original">Open Mix for you</string>
     <string name="my_mix_empty">Nothing to play here. Add tracks to your liked songs.</string>
     <string name="my_mix_add_to_likes">Add to liked tracks</string>
+    <string name="my_mix_cache_settings">My Mix auto-cache</string>
+    <string name="orphan_downloads_title">Storage leftovers</string>
+    <string name="orphan_downloads">Downloads that belong to no playlist</string>
+    <string name="orphan_downloads_count">tracks</string>
+    <string name="orphan_downloads_none">Nothing to clean up</string>
+    <string name="orphan_downloads_unknown">Counting needs every playlist to be loaded</string>
     <string name="my_mix_skip_stuck_title">Track is stuck loading</string>
     <string name="my_mix_skip_stuck_text">The track will be skipped in %1$d s</string>
     <string name="my_mix_skip_now">Skip now</string>

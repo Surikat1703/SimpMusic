@@ -1,6 +1,19 @@
 package com.maxrave.simpmusic.ui.screen.library
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.draw.clipToBounds
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.random.Random
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -8,6 +21,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,28 +30,28 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -50,16 +64,23 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -78,7 +99,6 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
 import com.maxrave.domain.manager.DataStoreManager
-import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.domain.mediaservice.handler.PlaylistType as QueuePlaylistType
 import com.maxrave.domain.mediaservice.handler.QueueData
@@ -90,11 +110,9 @@ import com.maxrave.simpmusic.expect.ui.toImageBitmap
 import com.maxrave.simpmusic.extension.getStringBlocking
 import com.maxrave.simpmusic.ui.component.MyMixVisualizer
 import com.maxrave.simpmusic.ui.component.QueueBottomSheet
-import com.maxrave.simpmusic.ui.icon.Add
 import com.maxrave.simpmusic.ui.icon.CloudOff
 import com.maxrave.simpmusic.ui.icon.Pause
 import com.maxrave.simpmusic.ui.icon.PlayArrow
-import com.maxrave.simpmusic.ui.icon.Remove
 import com.maxrave.simpmusic.ui.icon.Sensors
 import com.maxrave.simpmusic.ui.icon.SimpIcons
 import com.maxrave.simpmusic.ui.navigation.destination.library.MixForYouOriginalDestination
@@ -103,8 +121,6 @@ import com.maxrave.simpmusic.viewModel.LibraryViewModel
 import com.maxrave.simpmusic.viewModel.SharedViewModel
 import com.maxrave.simpmusic.viewModel.UIEvent
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
@@ -116,40 +132,23 @@ import org.koin.compose.viewmodel.koinViewModel
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.auto_created_by_youtube_music
 import simpmusic.composeapp.generated.resources.my_mix
-import simpmusic.composeapp.generated.resources.my_mix_auto_cache
-import simpmusic.composeapp.generated.resources.my_mix_auto_cache_desc
-import simpmusic.composeapp.generated.resources.my_mix_cached_count
-import simpmusic.composeapp.generated.resources.my_mix_offline
-import simpmusic.composeapp.generated.resources.my_mix_cache_count
-import simpmusic.composeapp.generated.resources.my_mix_cache_interval
-import simpmusic.composeapp.generated.resources.my_mix_cache_now
 import simpmusic.composeapp.generated.resources.my_mix_empty
-import simpmusic.composeapp.generated.resources.my_mix_mood
 import simpmusic.composeapp.generated.resources.my_mix_no_mood
+import simpmusic.composeapp.generated.resources.my_mix_offline
 import simpmusic.composeapp.generated.resources.my_mix_open_original
 import simpmusic.composeapp.generated.resources.my_mix_play
-import simpmusic.composeapp.generated.resources.my_mix_preparing
 import simpmusic.composeapp.generated.resources.my_mix_skip_now
 import simpmusic.composeapp.generated.resources.my_mix_skip_stuck_text
 import simpmusic.composeapp.generated.resources.my_mix_skip_stuck_title
 import simpmusic.composeapp.generated.resources.my_mix_skip_wait
-import simpmusic.composeapp.generated.resources.my_mix_subtitle
 import simpmusic.composeapp.generated.resources.my_mix_you_are_offline
 import simpmusic.composeapp.generated.resources.radio
 import simpmusic.composeapp.generated.resources.view_count
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.SwitchDefaults
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.maxrave.domain.data.entities.SongEntity
@@ -163,8 +162,6 @@ import com.maxrave.simpmusic.ui.icon.PlaylistAdd
 import com.maxrave.simpmusic.ui.icon.Close
 import com.maxrave.simpmusic.ui.icon.SkipNext
 import com.maxrave.simpmusic.ui.icon.SkipPrevious
-import com.maxrave.simpmusic.ui.icon.UnfoldLess
-import com.maxrave.simpmusic.ui.icon.UnfoldMore
 import com.maxrave.simpmusic.ui.icon.MoreVert
 import simpmusic.composeapp.generated.resources.my_mix_all_moods
 import simpmusic.composeapp.generated.resources.my_mix_add_to_likes
@@ -397,11 +394,9 @@ fun MyMixScreen(
     }
     val selectedMix = effectiveMixes.firstOrNull { it.browseId == selectedMoodId } ?: defaultMix
 
-    val listState = rememberLazyListState()
-    LaunchedEffect(listState) {
-        snapshotFlow {
-            listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-        }.collect { atTop -> onScrolling.invoke(atTop) }
+    // Fork: no vertical scrolling on this tab — the page fits the viewport and is always at the top.
+    LaunchedEffect(Unit) {
+        onScrolling(true)
     }
 
     val backgroundColor = MaterialTheme.colorScheme.background
@@ -870,13 +865,19 @@ fun MyMixScreen(
         }
     }
 
+    var artworkCenterY by remember { mutableStateOf(0f) }
+    var pageHeight by remember { mutableStateOf(0f) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             // Fork: the flat cover tone sits behind the field, so pausing — which fades the field
             // out — reveals the cover itself instead of a black page. It meets the field's own
             // darkened edge tone, so there is no seam between them.
-            .background(pageBackground),
+            .background(pageBackground)
+            .onGloballyPositioned { coords ->
+                pageHeight = coords.boundsInRoot().height
+            },
     ) {
         // Fork: the field is FIXED and covers the whole tab — binding it to the hero block is what
         // castrated it into a rectangle. The list scrolls over it; the figure stays fullscreen.
@@ -889,16 +890,12 @@ fun MyMixScreen(
             // Fork: recycling the GPU and the frame clock is the caller's job — the visualizer cannot
             // know whether the app is in the background. It stops the sweep and its frames when this
             // is false, and picks the clock up from where it stopped when it comes back.
-                        isVisible = isScreenVisible,
-            // Fork: the FIGURE (blob, rays, particles) is anchored behind the cover and follows it
-            // on scroll, while the field itself stays fullscreen with no box around it. Read inside
-            // the draw pass, so scrolling repaints instead of recomposing.
+            isVisible = isScreenVisible,
+            // Fork: the FIGURE (blob, rays, particles) follows the center of the cover artwork
+            // in root coordinates, falling back to 0.36f before the first layout measurement.
             figureCenterY = {
-                val layout = listState.layoutInfo
-                val hero = layout.visibleItemsInfo.firstOrNull { it.key == "my_mix_hero" }
-                val viewport = layout.viewportSize.height
-                if (hero != null && viewport > 0) {
-                    (hero.offset + hero.size * 0.30f) / viewport.toFloat()
+                if (pageHeight > 0f && artworkCenterY > 0f) {
+                    artworkCenterY / pageHeight
                 } else {
                     0.36f
                 }
@@ -920,23 +917,40 @@ fun MyMixScreen(
                 ),
         )
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            state = listState,
-            contentPadding = PaddingValues(
-                start = 18.dp,
-                end = 18.dp,
-                top = innerPadding.calculateTopPadding(),
-                bottom = innerPadding.calculateBottomPadding() + 120.dp,
-            ),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+        // Fork: the page is a fixed two-part Column — no scroll state anywhere on this screen.
+        // The hero takes all remaining space above the mood carousel; the carousel is pinned at
+        // the bottom so the page always fits the viewport without scrolling.
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(
+                    top = innerPadding.calculateTopPadding(),
+                    bottom = innerPadding.calculateBottomPadding(),
+                ),
         ) {
-            item(key = "my_mix_hero") {
+            // ── HERO — fills whatever height is left above the carousel ─────────────────────
+            // BoxWithConstraints lets us detect short screens and scale artwork / spacing down
+            // so nothing is clipped even on a compact device.
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                // Fork: on screens where the hero column would be taller than the available box
+                // the artwork shrinks proportionally, keeping the page within the viewport.
+                // Captured once at the top of the box: the player below lives inside another Box
+                // scope, where `maxHeight` from BoxWithConstraintsScope is no longer in reach.
+                val heroMaxHeight = maxHeight
+                // Hero artwork: full size when the page is roomy, otherwise a share of the space
+                // that is left, so the transport below never gets squeezed out of shape.
+                val artworkSize: Dp = (heroMaxHeight * 0.42f).coerceIn(88.dp, 168.dp)
+                val heroSpacing: Dp = if (heroMaxHeight < 320.dp) 8.dp else 16.dp
+
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 14.dp),
-                    verticalArrangement = Arrangement.spacedBy(26.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(heroSpacing),
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -997,6 +1011,8 @@ fun MyMixScreen(
                             onNext = { sharedViewModel.onUIEvent(UIEvent.Next) },
                             onPrevious = { sharedViewModel.onUIEvent(UIEvent.Previous) },
                             onSeek = { sharedViewModel.onUIEvent(UIEvent.UpdateProgress(it)) },
+                            availableHeight = heroMaxHeight,
+                            onArtworkCenterYChanged = { artworkCenterY = it },
                         )
                     } else {
                         // Nothing to control yet: the cover of what the button below would start,
@@ -1005,16 +1021,18 @@ fun MyMixScreen(
                         Column(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(heroSpacing),
                         ) {
                             AsyncImage(
                                 model = selectedMix?.thumbnails?.lastOrNull()?.url,
                                 contentScale = ContentScale.Crop,
-                                modifier =
-                                    Modifier
-                                        .size(168.dp)
-                                        .clip(RoundedCornerShape(18.dp))
-                                        .background(Color.White.copy(alpha = 0.12f)),
+                                modifier = Modifier
+                                    .size(artworkSize)
+                                    .onGloballyPositioned { coords ->
+                                        artworkCenterY = coords.boundsInRoot().center.y
+                                    }
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(Color.White.copy(alpha = 0.12f)),
                                 contentDescription = selectedMix?.title,
                             )
                             Text(
@@ -1044,6 +1062,16 @@ fun MyMixScreen(
                                 maxLines = 3,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            // Fork: empty-state message shown inside the hero area instead of a
+                            // separate list item, keeping the page layout fixed at all times.
+                            if (!isLoadingMixes && allMixes.isEmpty()) {
+                                Text(
+                                    text = stringResource(Res.string.my_mix_empty),
+                                    style = typo().bodyMedium,
+                                    color = Color.White.copy(alpha = 0.85f),
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
                             if (playFailed) {
                                 Text(
                                     text = stringResource(Res.string.my_mix_empty),
@@ -1064,13 +1092,12 @@ fun MyMixScreen(
                                 },
                                 modifier = Modifier.size(84.dp),
                                 enabled = !isPreparing,
-                                colors =
-                                    IconButtonDefaults.filledIconButtonColors(
-                                        containerColor = Color.White,
-                                        contentColor = Color.Black,
-                                        disabledContainerColor = Color.White.copy(alpha = 0.55f),
-                                        disabledContentColor = Color.Black.copy(alpha = 0.4f),
-                                    ),
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = Color.White,
+                                    contentColor = Color.Black,
+                                    disabledContainerColor = Color.White.copy(alpha = 0.55f),
+                                    disabledContentColor = Color.Black.copy(alpha = 0.4f),
+                                ),
                             ) {
                                 if (isPreparing) {
                                     CircularProgressIndicator(
@@ -1088,141 +1115,132 @@ fun MyMixScreen(
                             }
                         }
                     }
-
                 }
             }
 
-            // Fork: the mood row sits outside the hero. Inside it, the player's own height squeezed the
-            // row until its pills were unreadable as soon as playback started. Online it shows the
-            // full shelf; offline only the two entries that work without a network — the autocached
-            // Supermix and the Liked tracks the user caches themselves.
-            item(key = "my_mix_moods") {
-                // Fork: the row's scroll position is keyed on its item set. The default
-                // remembered state survives offline<->online swaps and restores a stale
-                // index into a different pill list, which is exactly the "shifted right,
-                // supermix hidden left" the row opened with. A new set starts at zero.
-                val moodRowState =
-                    remember(offline, superMix?.browseId, moodMixes.map { it.browseId }) {
-                        LazyListState(0, 0)
+            // ── MOOD PETALS — a fan of overlapping cards, pinned at the bottom ────────────────
+            // Yandex Music does not lay its moods out in a row: they sit like the petals of a
+            // flower — rotated, overlapping, the focused one upright in the middle and the ones
+            // further away turned and dropped behind. Same data and the same behaviour as the old
+            // pill row (tapping a petal picks that mood and starts it), only the arrangement is a
+            // fan. Dragging the fan moves the focus, so the whole shelf is reachable without a
+            // scrolling list.
+            var lastEmojis: List<String>? = null
+            fun pickEmojis(label: String): List<String> {
+                var chosen = resolveMoodEmojis(label)
+                if (chosen == lastEmojis) {
+                    val currentIdx = CURATED_EMOJI_POOL.indexOf(chosen)
+                    val nextIdx = if (currentIdx >= 0) {
+                        (currentIdx + 1) % CURATED_EMOJI_POOL.size
+                    } else {
+                        ((label.hashCode() and Int.MAX_VALUE) + 1) % CURATED_EMOJI_POOL.size
                     }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
+                    var candidate = CURATED_EMOJI_POOL[nextIdx]
+                    if (candidate == lastEmojis) {
+                        candidate = CURATED_EMOJI_POOL[(nextIdx + 1) % CURATED_EMOJI_POOL.size]
+                    }
+                    chosen = candidate
+                }
+                lastEmojis = chosen
+                return chosen
+            }
+
+            val petals = ArrayList<MoodPetal>(moodMixes.size + 3)
+            if (offline) {
+                // Offline the shelf is empty, so this petal plays the autocached mix directly.
+                val supermixLabel = stringResource(Res.string.my_mix_supermix)
+                petals +=
+                    MoodPetal(
+                        label = supermixLabel,
+                        selected = !isLikesSelected,
+                        emphasized = true,
+                        primary = fieldColor,
+                        secondary = waveSecondary,
+                        emojis = pickEmojis(supermixLabel),
+                    ) { playOffline() }
+            }
+            if (!offline) {
+                superMix?.let { mix ->
+                    // The personal mix leads the fan and is drawn first-class: it is the one entry
+                    // that follows the listener rather than a theme.
+                    val supermixLabel = stringResource(Res.string.my_mix_supermix)
+                    petals +=
+                        MoodPetal(
+                            label = supermixLabel,
+                            selected = !isLikesSelected && mix.browseId == selectedMix?.browseId,
+                            emphasized = true,
+                            primary = fieldColor,
+                            secondary = waveSecondary,
+                            emojis = pickEmojis(supermixLabel),
+                        ) {
+                            selectedMoodId = mix.browseId
+                            scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
+                            playMix(mix)
+                        }
+                }
+            }
+            // The liked-tracks petal gets its own gradient too: with the theme colours it landed on
+            // the same blue as the surface behind it and disappeared into the page.
+            val likesPalette = MOOD_PETAL_PALETTES[moodMixes.size % MOOD_PETAL_PALETTES.size]
+            val likesLabel = stringResource(Res.string.my_mix_no_mood)
+            petals +=
+                MoodPetal(
+                    label = likesLabel,
+                    selected = isLikesSelected,
+                    emphasized = false,
+                    primary = likesPalette.first,
+                    secondary = likesPalette.second,
+                    emojis = pickEmojis(likesLabel),
                 ) {
-                            LazyRow(
-                                state = moodRowState,
-                                modifier = Modifier.weight(1f),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                contentPadding = PaddingValues(horizontal = 2.dp),
-                            ) {
-                                // Fork: offline the shelf is empty, so the Supermix pill plays the
-                                // autocached mix directly instead of opening a playlist that is not there.
-                                if (offline) {
-                                    item(key = "supermix_offline") {
-                                        MoodPill(
-                                            label = stringResource(Res.string.my_mix_supermix),
-                                            selected = !isLikesSelected,
-                                            emphasized = true,
-                                            onClick = { playOffline() },
-                                        )
-                                    }
-                                }
-                                // Fork: the personal mix leads the row and is drawn differently, because
-                                // it is the one entry that follows the listener rather than a theme.
-                                // Online only — offline the row above already shows the Supermix pill
-                                // that plays the autocache, and a second identical pill is a duplicate.
-                                if (!offline) superMix?.let { mix ->
-                                    item(key = "supermix") {
-                                        MoodPill(
-                                            label = stringResource(Res.string.my_mix_supermix),
-                                            selected = !isLikesSelected && mix.browseId == selectedMix?.browseId,
-                                            emphasized = true,
-                                            onClick = {
-                                                selectedMoodId = mix.browseId
-                                                scope.launch {
-                                                    dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId)
-                                                }
-                                                playMix(mix)
-                                            },
-                                        )
-                                    }
-                                }
-                                item(key = "liked") {
-                                    MoodPill(
-                                        label = stringResource(Res.string.my_mix_no_mood),
-                                        selected = isLikesSelected,
-                                        onClick = {
-                                            selectedMoodId = LIKES_MOOD_ID
-                                            scope.launch {
-                                                dataStoreManager.putString(MyMixPrefs.MOOD_ID, LIKES_MOOD_ID)
-                                            }
-                                            // Picking a mood IS the start action here, so it plays at once.
-                                            playLikes()
-                                        },
-                                    )
-                                }
-                                if (!offline) {
-                                items(items = moodMixes, key = { it.browseId }) { mix ->
-                                    MoodPill(
-                                        label = cleanMoodName(mix.title),
-                                        selected = !isLikesSelected && mix.browseId == selectedMix?.browseId,
-                                        onClick = {
-                                            selectedMoodId = mix.browseId
-                                            scope.launch {
-                                                dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId)
-                                            }
-                                            playMix(mix)
-                                        },
-                                    )
-                                }
-                                }
-                            }
-                            // Fork: the row only has space for a few moods; this opens the whole shelf.
-                            // Online-only, like the shelf it opens.
-                            if (!offline) {
-                            IconButton(onClick = { showAllMoods = true }) {
-                                Icon(
-                                    imageVector = SimpIcons.UnfoldMore,
-                                    contentDescription = stringResource(Res.string.my_mix_all_moods),
-                                    tint = Color.White,
-                                )
-                            }
-                            }
+                    selectedMoodId = LIKES_MOOD_ID
+                    scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, LIKES_MOOD_ID) }
+                    playLikes()
+                }
+            if (!offline) {
+                moodMixes.forEachIndexed { index, mix ->
+                    val palette = MOOD_PETAL_PALETTES[index % MOOD_PETAL_PALETTES.size]
+                    val moodLabel = cleanMoodName(mix.title).ifBlank { mix.title }
+                    petals +=
+                        MoodPetal(
+                            label = moodLabel,
+                            selected = !isLikesSelected && mix.browseId == selectedMix?.browseId,
+                            emphasized = false,
+                            primary = palette.first,
+                            secondary = palette.second,
+                            emojis = pickEmojis(moodLabel),
+                        ) {
+                            selectedMoodId = mix.browseId
+                            scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
+                            playMix(mix)
                         }
-
                 }
-
-            // Fork: the start button lives inside the hero now (under the cover it would start), so
-            // there is exactly one play control on the page at any moment — either the player's own
-            // transport or this one.
-
-            if (!isLoadingMixes && allMixes.isEmpty()) {
-                item(key = "my_mix_empty") {
-                    Text(
-                        text = stringResource(Res.string.my_mix_empty),
-                        style = typo().bodyMedium,
-                        color = Color.White.copy(alpha = 0.85f),
-                    )
-                }
+                // The whole shelf lives behind this petal, so the fan does not have to hold every
+                // mood at once.
+                val allMoodsLabel = stringResource(Res.string.my_mix_all_moods)
+                petals +=
+                    MoodPetal(
+                        label = allMoodsLabel,
+                        selected = false,
+                        emphasized = false,
+                        primary = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        secondary = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        emojis = pickEmojis(allMoodsLabel),
+                    ) { showAllMoods = true }
             }
 
-            item(key = "my_mix_cache") {
-                MyMixCacheCard(
-                    dataStoreManager = dataStoreManager,
-                    // The scheduler watches this key and enqueues a one-off forced run, so the manual
-                    // button goes through the same worker as the schedule instead of downloading here.
-                    onRefreshNow = {
-                        scope.launch {
-                            dataStoreManager.putString(
-                                MyMixPrefs.CACHE_REQUEST,
-                                Clock.System.now().toEpochMilliseconds().toString(),
-                            )
-                        }
-                    },
-                )
+            // The focused petal is a local piece of state: it follows the selection, but dragging
+            // the fan can browse the shelf without starting anything.
+            var petalFocus by remember(petals.size) { mutableStateOf(0) }
+            LaunchedEffect(selectedMoodId, petals.size) {
+                val selectedIndex = petals.indexOfFirst { it.selected }
+                if (selectedIndex >= 0) petalFocus = selectedIndex
             }
 
-
+            MoodPetalFan(
+                petals = petals,
+                focus = petalFocus,
+                onFocusChange = { petalFocus = it },
+            )
         }
 
         if (showAllMoods) {
@@ -1401,7 +1419,13 @@ private fun MyMixNowPlaying(
     onNext: () -> Unit,
     onPrevious: () -> Unit,
     onSeek: (Float) -> Unit,
+    availableHeight: Dp = 400.dp,
+    onArtworkCenterYChanged: (Float) -> Unit = {},
 ) {
+    // Fork: artwork size derived from available hero height minus fixed UI height (250 dp for title,
+    // artist, seek row, transport, and inter-item spacings). Keeps the transport from squeezing into the slider.
+    val artworkSize: Dp = (availableHeight - 250.dp).coerceIn(96.dp, 180.dp)
+
     // Fork: the timeline is collected HERE rather than passed in. It changes every few hundred
     // milliseconds, and a value read by the screen would recompose the whole tab — the list included —
     // on every position tick.
@@ -1421,24 +1445,42 @@ private fun MyMixNowPlaying(
     }
 
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        // Fork: the player owns the whole hero and the COVER absorbs the slack (weight), instead of
+        // the cover having a fixed size and the transport being squeezed into the seek bar when the
+        // page is short. Fixed-height children can no longer be clamped, so the play button keeps its
+        // round shape and its distance from the slider at any screen height.
+        modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        AsyncImage(
-            model = song.thumbnails,
-            contentScale = ContentScale.Crop,
+        // Fork: the cover is the only flexible element of the player. A Column measures its fixed
+        // children first and hands the rest to the weighted one, so the seek row and the transport
+        // can never be squeezed into each other — on a short hero the cover just gets smaller.
+        Box(
             modifier = Modifier
-                .size(168.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color.White.copy(alpha = 0.12f))
-                .clickable { onOpenPlayer() },
-            contentDescription = song.title,
-        )
+                .weight(1f)
+                .fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+        ) {
+            AsyncImage(
+                model = song.thumbnails,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .aspectRatio(1f, matchHeightConstraintsFirst = true)
+                    .onGloballyPositioned { coords ->
+                        onArtworkCenterYChanged(coords.boundsInRoot().center.y)
+                    }
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color.White.copy(alpha = 0.12f))
+                    .clickable { onOpenPlayer() },
+                contentDescription = song.title,
+            )
+        }
         Text(
             text = song.title,
             style = typo().titleLarge.copy(
-                fontSize = 26.sp,
+                fontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
                 shadow = Shadow(
                     color = Color.Black.copy(alpha = 0.65f),
@@ -1564,11 +1606,19 @@ private fun MyMixNowPlaying(
             }
         }
 
+        // Fork: the seek row and the round transport stuck together visually — the slider's own
+        // height swallowed the gap. A real 14 dp spacer separates them, and the transport row has a
+        // fixed minimum height of 84 dp so it can never be squeezed into the slider.
+        Spacer(Modifier.height(20.dp))
         Row(
+            modifier = Modifier.heightIn(min = 76.dp),
             horizontalArrangement = Arrangement.spacedBy(26.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onPrevious, modifier = Modifier.size(46.dp)) {
+            // requiredSize, not size: the hero is height-constrained by the mood fan, and a plain
+            // size() is clamped by the incoming constraint, which turned the round button into an
+            // oval on tall phones.
+            IconButton(onClick = onPrevious, modifier = Modifier.requiredSize(46.dp)) {
                 Icon(
                     imageVector = SimpIcons.SkipPrevious,
                     contentDescription = null,
@@ -1578,7 +1628,7 @@ private fun MyMixNowPlaying(
             }
             FilledIconButton(
                 onClick = onPlayPause,
-                modifier = Modifier.size(74.dp),
+                modifier = Modifier.requiredSize(64.dp),
                 colors = IconButtonDefaults.filledIconButtonColors(
                     containerColor = Color.White,
                     contentColor = Color.Black,
@@ -1587,10 +1637,10 @@ private fun MyMixNowPlaying(
                 Icon(
                     imageVector = if (isPlaying) SimpIcons.Pause else SimpIcons.PlayArrow,
                     contentDescription = stringResource(Res.string.my_mix_play),
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.size(30.dp),
                 )
             }
-            IconButton(onClick = onNext, modifier = Modifier.size(46.dp)) {
+            IconButton(onClick = onNext, modifier = Modifier.requiredSize(46.dp)) {
                 Icon(
                     imageVector = SimpIcons.SkipNext,
                     contentDescription = null,
@@ -1602,272 +1652,353 @@ private fun MyMixNowPlaying(
     }
 }
 
-/** A translucent pill for the mood row — the hero is a colour field, so these are white-on-glass. */
+/**
+ * One petal of the mood fan. Built once per composition; tapping it both focuses the fan and starts
+ * the mood, which is the behaviour the pill row had.
+ */
+private class MoodPetal(
+    val label: String,
+    val selected: Boolean,
+    val emphasized: Boolean,
+    val primary: Color,
+    val secondary: Color,
+    val emojis: List<String> = emptyList(),
+    val onClick: () -> Unit,
+)
+
+/**
+ * Fork: the mood shelf drawn as a carousel row of oval petals instead of a scrolling row.
+ *
+ * A circular fan of mood cards arranged along a large circular arc (R = 760 dp) rising from below the screen.
+ *
+ * Each card is a tall portrait oval (150 x 210 dp). Dragging rotates that arc like a carousel wheel: the card that
+ * comes to the top-centre (angle 0) is the focused one, while neighbouring cards lean away (13° step)
+ * and sink towards the bottom corners. A chord distance of ~172 dp leaves ~22 dp of visible air between
+ * 150 dp ovals so neighbours never touch.
+ *
+ * The whole carousel is driven by ONE animated float — the position on the shelf, in petals. Every
+ * card's rotation, scale, arc translation and opacity is derived from it inside the draw phase.
+ * All petals are composed together so no cards pop in mid-gesture. Cards near the corners and bottom
+ * are clipped by the container Box, giving the impression of growing from behind the bottom bar.
+ */
 @Composable
-private fun MoodPill(
+private fun MoodPetalFan(
+    petals: List<MoodPetal>,
+    focus: Int,
+    onFocusChange: (Int) -> Unit,
+) {
+    if (petals.isEmpty()) return
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val rPx = with(density) { MOOD_ARC_RADIUS.toPx() }
+    val stepHalfRad = ((MOOD_ANGLE_STEP_DEG / 2f) * PI / 180.0).toFloat()
+    val chordPx = 2f * rPx * sin(stepHalfRad)
+    val offset = remember { Animatable(focus.toFloat()) }
+    val settle = spring<Float>(dampingRatio = 0.78f, stiffness = Spring.StiffnessMediumLow)
+
+    fun settleOn(target: Int) {
+        val bounded = target.coerceIn(0, petals.lastIndex)
+        onFocusChange(bounded)
+        scope.launch { offset.animateTo(bounded.toFloat(), settle) }
+    }
+
+    // Selection changed from outside (a tap, the mood picker, a mood restored from DataStore):
+    // glide to the petal instead of cutting.
+    LaunchedEffect(focus) {
+        if (abs(offset.value - focus.toFloat()) > 0.01f) offset.animateTo(focus.toFloat(), settle)
+    }
+
+    Box(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                // The carousel sits at the bottom of the page; cards rise from the bottom edge along
+                // the R = 760 dp circular arc. The focused card hangs with its centre 150 dp above
+                // the bottom (45 dp bottom clearance for its 210 dp height), while neighbouring cards
+                // sink towards the corners and clip against the container edges.
+                .height(228.dp)
+                // Keeps the focused petal clear of the transport above it.
+                .padding(top = 18.dp)
+                .clipToBounds()
+                .padding(bottom = 45.dp)
+                .pointerInput(petals.size) {
+                    detectHorizontalDragGestures(
+                        onDragStart = {},
+                        onDragEnd = { settleOn(offset.value.roundToInt()) },
+                        onDragCancel = { settleOn(offset.value.roundToInt()) },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            val next =
+                                (offset.value - dragAmount / chordPx)
+                                    .coerceIn(0f, petals.lastIndex.toFloat())
+                            scope.launch { offset.snapTo(next) }
+                        },
+                    )
+                },
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        // Farthest first, so the focused petal ends up on top of the carousel. Every card is composed
+        // at once so nothing pops in mid-gesture; the draw phase fades distant cards smoothly.
+        petals.indices
+            .sortedByDescending { abs(it - focus) }
+            .forEach { index ->
+                MoodCard(
+                    // Pass the real label unconditionally; distance-based labelAlpha in the draw
+                    // phase smoothly fades neighbours without popping or recomposition.
+                    label = petals[index].label,
+                    selected = petals[index].selected,
+                    focused = index == focus,
+                    emphasized = petals[index].emphasized,
+                    primaryColor = petals[index].primary,
+                    secondaryColor = petals[index].secondary,
+                    emojis = petals[index].emojis,
+                    // Soft falloff: every composed card shows its label at all times (never below ~0.55 alpha),
+                    // while the centre card reads strongest. Evaluated in draw phase without per-frame recomposition.
+                    labelAlpha = { (1f - abs(index - offset.value) * 0.18f).coerceIn(0.55f, 1f) },
+                    modifier =
+                        Modifier
+                            .zIndex(-abs(index - focus).toFloat())
+                            .graphicsLayer {
+                                val a = (index - offset.value) * MOOD_ANGLE_STEP_DEG
+                                val aRad = (a * PI / 180.0).toFloat()
+                                translationX = rPx * sin(aRad)
+                                translationY = rPx * (1f - cos(aRad))
+                                rotationZ = a
+                                transformOrigin = TransformOrigin(0.5f, 1.0f)
+                                val scale = 0.94f.pow(abs(a) / MOOD_ANGLE_STEP_DEG).coerceAtLeast(0.62f)
+                                scaleX = scale
+                                scaleY = scale
+                                alpha = (1f - abs(a) / 45f).coerceIn(0.25f, 1f)
+                            },
+                    onClick = {
+                        settleOn(index)
+                        petals[index].onClick()
+                    },
+                )
+            }
+    }
+}
+
+/**
+ * Geometry constants for the circular mood carousel.
+ *
+ * Cards are tall portrait ovals (150 x 210 dp) arranged along a circular arc with radius R = 760 dp
+ * whose centre sits far below the screen. The angle between adjacent cards is 13 degrees, yielding
+ * a chord distance of 2 * R * sin(13° / 2) ≈ 172.07 dp between neighbour anchors. Because each card is
+ * 150 dp wide, this guarantees ~22 dp of visible air between neighbouring ovals so they never touch.
+ */
+private val MOOD_ARC_RADIUS = 780.dp
+private const val MOOD_ANGLE_STEP_DEG = 9.5f
+private val MOOD_CHORD_STEP = 172.dp
+private val MOOD_CARD_WIDTH = 126.dp
+private val MOOD_CARD_HEIGHT = 154.dp
+
+/**
+ * A curated pool of 12 thematic emoji sets (3-5 faint glyphs each) used as fallbacks
+ * and for advancing adjacent cards to avoid duplicate textures.
+ */
+private val CURATED_EMOJI_POOL: List<List<String>> = listOf(
+    listOf("✨", "💫", "🎵", "🌟"),
+    listOf("🎸", "🥁", "🤘", "🔥"),
+    listOf("☕", "🥐", "🌤️", "📖"),
+    listOf("🌴", "🌊", "☀️", "🏄"),
+    listOf("🌌", "🪐", "🛸", "✨"),
+    listOf("🌸", "🍃", "🦋", "🌿"),
+    listOf("🎹", "🎼", "🎻", "✨"),
+    listOf("🌆", "🌃", "🏮", "✨"),
+    listOf("👾", "🕹️", "🎮", "⚡"),
+    listOf("🔮", "🪄", "🕯️", "✨"),
+    listOf("🍁", "🍂", "☕", "🧣"),
+    listOf("❄️", "☃️", "🏔️", "☕"),
+)
+
+/**
+ * Maps mood names to fitting emoji patterns by meaning. Evaluates lowercased keywords for
+ * Russian mood categories shown in this fork (falling back to a deterministic selection from
+ * [CURATED_EMOJI_POOL]).
+ */
+private fun resolveMoodEmojis(label: String): List<String> {
+    val lower = label.lowercase()
+    return when {
+        // "отдых/сон/ночь/спокой" -> 🌙💤🛌✨
+        listOf("отдых", "сон", "ночь", "спокой", "relax", "sleep", "chill", "calm").any { it in lower } ->
+            listOf("🌙", "💤", "🛌", "✨")
+        // "бодр/энерг/заряд" -> ⚡🔥🏃💥
+        listOf("бодр", "энерг", "заряд", "energy", "power", "wake").any { it in lower } ->
+            listOf("⚡", "🔥", "🏃", "💥")
+        // "вечерин/тусов/танц" -> 🎉🪩🍾💃
+        listOf("вечерин", "тусов", "танц", "party", "dance", "club").any { it in lower } ->
+            listOf("🎉", "🪩", "🍾", "💃")
+        // "дорог/путь/поезд" -> 🚗🛣️🧳🎧
+        listOf("дорог", "путь", "поезд", "road", "drive", "travel", "trip").any { it in lower } ->
+            listOf("🚗", "🛣️", "🧳", "🎧")
+        // "работ/фокус/концентр" -> 🎯💻📚🧠
+        listOf("работ", "фокус", "концентр", "work", "focus", "study").any { it in lower } ->
+            listOf("🎯", "💻", "📚", "🧠")
+        // "романт/любов" -> 💜💞🌹✨
+        listOf("романт", "любов", "люб", "love", "romance").any { it in lower } ->
+            listOf("💜", "💞", "🌹", "✨")
+        // "спорт/трениров" -> 🏋️🥊🏃🔥
+        listOf("спорт", "трениров", "sport", "workout", "gym", "fitness").any { it in lower } ->
+            listOf("🏋️", "🥊", "🏃", "🔥")
+        // "груст/меланх/дожд" -> 🌧️💧🫧🌫️
+        listOf("груст", "меланх", "дожд", "sad", "rain", "melancholy", "grief").any { it in lower } ->
+            listOf("🌧️", "💧", "🫧", "🌫️")
+        else -> {
+            val poolIndex = (label.hashCode() and Int.MAX_VALUE) % CURATED_EMOJI_POOL.size
+            CURATED_EMOJI_POOL[poolIndex]
+        }
+    }
+}
+
+/**
+ * One petal's gradient and background emoji texture.
+ *
+ * Each palette carries a small set of thematic emoji picked to read as a faint, organic
+ * pattern rather than content.
+ */
+private data class MoodPetalPalette(
+    val first: Color,
+    val second: Color,
+    val emojis: List<String>,
+)
+
+/**
+ * Fork: the mood petals are tinted from their own palette instead of the theme containers.
+ *
+ * On a dark theme the container colours of neighbouring moods came out nearly identical, so the fan
+ * read as one grey blob. These pairs are picked to stay legible white-on-gradient and to differ from
+ * each other, the way the mood cards of Yandex Music do.
+ */
+private val MOOD_PETAL_PALETTES = listOf(
+    MoodPetalPalette(
+        Color(0xFF7B2FF7),
+        Color(0xFFB14BFF),
+        listOf("✨", "🔮", "🪐", "💫"),
+    ),
+    MoodPetalPalette(
+        Color(0xFF0F6FFF),
+        Color(0xFF37C2FF),
+        listOf("☁️", "🫧", "🌊", "❄️"),
+    ),
+    MoodPetalPalette(
+        Color(0xFFFF5A3C),
+        Color(0xFFFFA53D),
+        listOf("🔥", "⚡", "💥", "☀️"),
+    ),
+    MoodPetalPalette(
+        Color(0xFF0E9F6E),
+        Color(0xFF6EE7B7),
+        listOf("🍃", "🌿", "🌱", "🍀"),
+    ),
+    MoodPetalPalette(
+        Color(0xFFD9168C),
+        Color(0xFFFF6FA5),
+        listOf("🎉", "🪩", "💖", "✨"),
+    ),
+    MoodPetalPalette(
+        Color(0xFF4C1D95),
+        Color(0xFF8B5CF6),
+        listOf("🌙", "⭐", "🌌", "🪐"),
+    ),
+    MoodPetalPalette(
+        Color(0xFF0E7490),
+        Color(0xFF22D3EE),
+        listOf("💧", "🌊", "🫧", "🌧️"),
+    ),
+    MoodPetalPalette(
+        Color(0xFFB45309),
+        Color(0xFFFBBF24),
+        listOf("🌅", "🍂", "☕", "✨"),
+    ),
+)
+
+
+/**
+ * Fork: a large mood card — the petal of the mood fan.
+ *
+ * Card is a soft vertical gradient built from the theme / accent colours already on this screen,
+ * so no new palette is introduced. Selected cards are full-opacity with a 1 dp rim; unselected
+ * cards sit at 65 % alpha so the selected one reads clearly without the others disappearing.
+ * A scattered, faint emoji pattern gives each mood petal its own tactile texture behind the label.
+ * The fan supplies the placement (offset, rotation, scale) through [modifier].
+ */
+@Composable
+private fun MoodCard(
     label: String,
     selected: Boolean,
-    emphasized: Boolean = false,
+    emphasized: Boolean,
+    focused: Boolean = false,
+    primaryColor: Color,
+    secondaryColor: Color,
+    emojis: List<String> = emptyList(),
+    labelAlpha: () -> Float = { 1f },
+    modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    // The focused petal is painted at full strength even when it is not the one playing: the fan
+    // would otherwise look like the middle card is the disabled one.
+    val cardAlpha = if (selected || focused) 1f else 0.65f
+
     Surface(
-        // Fork: the personal mix is set apart with a hairline rim and a touch more body, without
-        // becoming a different component — it still has to read as one of the moods.
-        color = when {
-            selected -> Color.White
-            emphasized -> Color.White.copy(alpha = 0.30f)
-            else -> Color.White.copy(alpha = 0.18f)
-        },
-        shape = RoundedCornerShape(50),
-        border = if (emphasized && !selected) {
-            BorderStroke(1.dp, Color.White.copy(alpha = 0.55f))
+        // Fork: the rim is the only selection indicator — no background swap, so the gradient stays
+        // visible and the selected card does not look like a different component.
+        color = Color.Transparent,
+        shape = RoundedCornerShape(percent = 50),
+        border = if (selected || focused) {
+            BorderStroke(1.5.dp, Color.White.copy(alpha = if (focused) 0.9f else 0.85f))
+        } else if (emphasized) {
+            BorderStroke(1.dp, Color.White.copy(alpha = 0.45f))
         } else {
             null
         },
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
+        modifier = modifier
+            .width(MOOD_CARD_WIDTH)
+            .height(MOOD_CARD_HEIGHT)
+            .clip(RoundedCornerShape(percent = 50))
             .clickable { onClick() },
     ) {
-        Text(
-            text = label,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
-            style = typo().bodyMedium,
-            color = if (selected) Color.Black else Color.White,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-
-@Composable
-private fun MyMixCacheCard(
-    dataStoreManager: DataStoreManager,
-    onRefreshNow: () -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    val songRepository: SongRepository = koinInject()
-    var enabled by remember { mutableStateOf(false) }
-    var trackCount by remember { mutableStateOf(MyMixPrefs.DEFAULT_COUNT) }
-    var intervalDays by remember { mutableStateOf(MyMixPrefs.DEFAULT_INTERVAL_DAYS) }
-    // Fork: closed on entry — the settings are visited rarely, and the count below is the part that
-    // is worth seeing without asking for it.
-    var expanded by remember { mutableStateOf(false) }
-    var plannedCount by remember { mutableStateOf(0) }
-    var downloadedCount by remember { mutableStateOf(0) }
-
-    LaunchedEffect(Unit) {
-        enabled = dataStoreManager.getString(MyMixPrefs.AUTO_CACHE).first() == DataStoreManager.TRUE
-        trackCount = dataStoreManager.getString(MyMixPrefs.CACHE_COUNT).first()?.toIntOrNull()
-            ?: MyMixPrefs.DEFAULT_COUNT
-        intervalDays = dataStoreManager.getString(MyMixPrefs.CACHE_INTERVAL_DAYS).first()?.toIntOrNull()
-            ?: MyMixPrefs.DEFAULT_INTERVAL_DAYS
-    }
-
-    // Fork: "downloaded N of M" is answered from the cache worker's own plan (CACHED_IDS) crossed with
-    // the songs actually on disk, so it cannot drift from what the worker decided — and it also
-    // watches the live download states, so the count ticks up while a batch is still downloading
-    // instead of only after the worker rewrites the plan.
-    // PERF FIX: downloadTask fires very frequently during batch downloads; debounce it to 2 s
-    // so Room isn't queried on every single download tick.
-    val downloadHandler: DownloadHandler = koinInject()
-    LaunchedEffect(Unit) {
-        @OptIn(kotlinx.coroutines.FlowPreview::class)
-        combine(
-            dataStoreManager.getString(MyMixPrefs.CACHED_IDS).distinctUntilChanged(),
-            downloadHandler.downloadTask.debounce(2_000),
-        ) { raw, _ -> raw }
-            .collect { raw ->
-                val ids = raw.orEmpty().split(",").map { it.trim() }.filter { it.isNotEmpty() }
-                plannedCount = ids.size
-                downloadedCount = if (ids.isEmpty()) {
-                    0
-                } else {
-                    runCatching {
-                        songRepository.getDownloadedVideoIdListFromListVideoIdAsFlow(ids).first().size
-                    }.getOrDefault(0)
-                }
-            }
-    }
-
-    fun setEnabled(value: Boolean) {
-        enabled = value
-        scope.launch {
-            dataStoreManager.putString(MyMixPrefs.AUTO_CACHE, if (value) DataStoreManager.TRUE else DataStoreManager.FALSE)
-        }
-    }
-
-    fun setCount(value: Int) {
-        val clamped = value.coerceIn(10, 500)
-        trackCount = clamped
-        scope.launch { dataStoreManager.putString(MyMixPrefs.CACHE_COUNT, clamped.toString()) }
-    }
-
-    fun setInterval(value: Int) {
-        val clamped = value.coerceIn(1, 30)
-        intervalDays = clamped
-        scope.launch { dataStoreManager.putString(MyMixPrefs.CACHE_INTERVAL_DAYS, clamped.toString()) }
-    }
-
-    // Fork: white-on-glass, to match the rest of the page — the hero is a colour field, so a solid
-    // Material surface reads as a hole punched through it.
-    Surface(
-        color = Color.White.copy(alpha = 0.12f),
-        shape = RoundedCornerShape(24.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { expanded = !expanded },
-                ) {
-                    Text(
-                        text = stringResource(Res.string.my_mix_auto_cache),
-                        style = typo().titleMedium,
-                        color = Color.White,
-                    )
-                    Text(
-                        text = stringResource(Res.string.my_mix_auto_cache_desc),
-                        style = typo().bodySmall,
-                        color = Color.White.copy(alpha = 0.72f),
-                    )
-                    // Fork: visible whether the block is open or closed — "how much of the mix is on
-                    // disk" is the one number worth reading at a glance.
-                    Text(
-                        text = "${stringResource(Res.string.my_mix_cached_count)} $downloadedCount / $plannedCount",
-                        style = typo().bodySmall,
-                        color = Color.White.copy(alpha = 0.9f),
-                    )
-                }
-                Switch(
-                    checked = enabled,
-                    onCheckedChange = { setEnabled(it) },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
-                        checkedTrackColor = Color.White.copy(alpha = 0.35f),
-                        checkedBorderColor = Color.Transparent,
-                        uncheckedThumbColor = Color.White,
-                        uncheckedTrackColor = Color.White.copy(alpha = 0.12f),
-                        uncheckedBorderColor = Color.White.copy(alpha = 0.45f),
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(percent = 50))
+                .background(
+                    Brush.verticalGradient(
+                        0f to primaryColor.copy(alpha = 0.85f * cardAlpha),
+                        1f to secondaryColor.copy(alpha = 0.95f * cardAlpha),
                     ),
+                    shape = RoundedCornerShape(percent = 50),
                 )
-                IconButton(onClick = { expanded = !expanded }) {
-                    Icon(
-                        imageVector = if (expanded) SimpIcons.UnfoldLess else SimpIcons.UnfoldMore,
-                        contentDescription = stringResource(Res.string.my_mix_auto_cache),
-                        tint = Color.White,
-                    )
-                }
-            }
 
-            AnimatedVisibility(visible = expanded && enabled) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    StepperRow(
-                        label = stringResource(Res.string.my_mix_cache_count),
-                        value = trackCount,
-                        onValueChange = { setCount(it) },
-                    )
-                    StepperRow(
-                        label = stringResource(Res.string.my_mix_cache_interval),
-                        value = intervalDays,
-                        onValueChange = { setInterval(it) },
-                    )
-                    FilledTonalButton(
-                        onClick = onRefreshNow,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = Color.White.copy(alpha = 0.18f),
-                            contentColor = Color.White,
+        ) {
+            // Soft scrim behind the label row, so the title keeps its contrast on the gradient.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(78.dp)
+                    .align(Alignment.BottomCenter)
+                    .graphicsLayer { alpha = labelAlpha() }
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            1f to secondaryColor.copy(alpha = 0.55f * cardAlpha),
                         ),
-                    ) {
-                        Text(text = stringResource(Res.string.my_mix_cache_now))
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun StepperRow(
-    label: String,
-    value: Int,
-    onValueChange: (Int) -> Unit,
-) {
-    // Fork: a number is typed as often as it is stepped, so the value is a real text field. It holds
-    // its own text while it is being edited and only reports back on Done or when focus leaves, so the
-    // clamp cannot fight the keyboard mid-number.
-    var text by remember(value) { mutableStateOf(value.toString()) }
-    var focused by remember { mutableStateOf(false) }
-
-    fun commit() {
-        val parsed = text.toIntOrNull()
-        if (parsed == null) {
-            text = value.toString()
-        } else {
-            onValueChange(parsed)
-        }
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            style = typo().bodyLarge,
-            color = Color.White,
-            modifier = Modifier.weight(1f),
-        )
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            IconButton(onClick = { onValueChange(value - 1) }) {
-                Icon(
-                    imageVector = SimpIcons.Remove,
-                    contentDescription = null,
-                    tint = Color.White,
-                )
-            }
-            Surface(
-                color = Color.White.copy(alpha = 0.16f),
-                shape = RoundedCornerShape(10.dp),
-            ) {
-                BasicTextField(
-                    value = text,
-                    onValueChange = { input -> text = input.filter { it.isDigit() }.take(4) },
-                    textStyle = typo().titleMedium.copy(color = Color.White),
-                    singleLine = true,
-                    cursorBrush = SolidColor(Color.White),
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Number,
-                        imeAction = ImeAction.Done,
                     ),
-                    keyboardActions = KeyboardActions(onDone = { commit() }),
-                    modifier = Modifier
-                        .width(68.dp)
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                        .onFocusChanged { state ->
-                            if (focused && !state.isFocused) commit()
-                            focused = state.isFocused
-                        },
-                )
-            }
-            IconButton(onClick = { onValueChange(value + 1) }) {
-                Icon(
-                    imageVector = SimpIcons.Add,
-                    contentDescription = null,
-                    tint = Color.White,
+            )
+
+            // The text column fades in with the petal's distance to the fan center
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 14.dp, end = 14.dp, bottom = 44.dp)
+                    .graphicsLayer { alpha = labelAlpha() },
+            ) {
+                Text(
+                    text = label,
+                    style = typo().bodyLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }

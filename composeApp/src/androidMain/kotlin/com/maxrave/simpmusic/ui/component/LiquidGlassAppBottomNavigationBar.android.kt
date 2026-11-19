@@ -109,9 +109,10 @@ actual fun LiquidGlassAppBottomNavigationBar(
 
     // Fork: the Mix tab has its own in-tab player, so the mini player this bar draws must
     // disappear while that tab is in front - the same rule App.kt applies to its own copy.
+    // Falls back to startDestination on the very first frame before backstack commits.
     val isOnMixTab = currentBackStackEntry?.destination?.hierarchy?.any {
         it.hasRoute(MixForYouDestination::class)
-    } == true
+    } ?: (startDestination is MixForYouDestination)
     val bottomNavScreens =
         listOfNotNull(
             BottomNavScreen.Home,
@@ -173,7 +174,7 @@ actual fun LiquidGlassAppBottomNavigationBar(
     val miniPlayerPadding = if (liquidGlass) 12.dp else 16.dp
     val miniPlayerGap = if (liquidGlass) 12.dp else 8.dp
     val constraintSet =
-        remember(isShowMiniPlayer, isExpanded, liquidGlass) {
+        remember(isShowMiniPlayer, isOnMixTab, isExpanded, liquidGlass) {
             decoupledConstraints(isShowMiniPlayer && !isOnMixTab, isExpanded, miniPlayerPadding, miniPlayerGap)
         }
 
