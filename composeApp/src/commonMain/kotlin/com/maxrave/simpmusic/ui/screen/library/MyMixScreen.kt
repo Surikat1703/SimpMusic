@@ -1,19 +1,8 @@
 package com.maxrave.simpmusic.ui.screen.library
 
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.zIndex
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.draw.clipToBounds
-import kotlin.math.PI
-import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.pow
-import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.random.Random
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -31,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.requiredSize
@@ -49,9 +37,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -64,23 +49,24 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.text.TextLayoutResult
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -918,7 +904,7 @@ fun MyMixScreen(
         )
 
         // Fork: the page is a fixed two-part Column — no scroll state anywhere on this screen.
-        // The hero takes all remaining space above the mood carousel; the carousel is pinned at
+        // The hero takes all remaining space above the mood cards; the row is pinned at
         // the bottom so the page always fits the viewport without scrolling.
         Column(
             modifier = Modifier
@@ -928,7 +914,7 @@ fun MyMixScreen(
                     bottom = innerPadding.calculateBottomPadding(),
                 ),
         ) {
-            // ── HERO — fills whatever height is left above the carousel ─────────────────────
+            // ── HERO — fills whatever height is left above the mood row ─────────────────────
             // BoxWithConstraints lets us detect short screens and scale artwork / spacing down
             // so nothing is clipped even on a compact device.
             BoxWithConstraints(
@@ -1118,129 +1104,79 @@ fun MyMixScreen(
                 }
             }
 
-            // ── MOOD PETALS — a fan of overlapping cards, pinned at the bottom ────────────────
-            // Yandex Music does not lay its moods out in a row: they sit like the petals of a
-            // flower — rotated, overlapping, the focused one upright in the middle and the ones
-            // further away turned and dropped behind. Same data and the same behaviour as the old
-            // pill row (tapping a petal picks that mood and starts it), only the arrangement is a
-            // fan. Dragging the fan moves the focus, so the whole shelf is reachable without a
-            // scrolling list.
-            var lastEmojis: List<String>? = null
-            fun pickEmojis(label: String): List<String> {
-                var chosen = resolveMoodEmojis(label)
-                if (chosen == lastEmojis) {
-                    val currentIdx = CURATED_EMOJI_POOL.indexOf(chosen)
-                    val nextIdx = if (currentIdx >= 0) {
-                        (currentIdx + 1) % CURATED_EMOJI_POOL.size
-                    } else {
-                        ((label.hashCode() and Int.MAX_VALUE) + 1) % CURATED_EMOJI_POOL.size
-                    }
-                    var candidate = CURATED_EMOJI_POOL[nextIdx]
-                    if (candidate == lastEmojis) {
-                        candidate = CURATED_EMOJI_POOL[(nextIdx + 1) % CURATED_EMOJI_POOL.size]
-                    }
-                    chosen = candidate
-                }
-                lastEmojis = chosen
-                return chosen
-            }
+            // ── MOOD CARDS — horizontal row of cards under the player ────────────────────────
+            // A plain non-lazy Row of exactly three cards in order: personal supermix, liked tracks,
+            // and the entry into all moods. Horizontally scrollable so it fits any screen width
+            // without clipping shadows or vertically scrolling the page.
+            val likesPalette = MOOD_PALETTES[moodMixes.size % MOOD_PALETTES.size]
+            val supermixSelected = !isLikesSelected && (offline || superMix?.browseId == selectedMix?.browseId)
+            val likesSelected = isLikesSelected
+            val allMoodsAvailable = !offline || moodMixes.isNotEmpty()
 
-            val petals = ArrayList<MoodPetal>(moodMixes.size + 3)
-            if (offline) {
-                // Offline the shelf is empty, so this petal plays the autocached mix directly.
+            Row(
+                // Three cards share the full width of the screen: no horizontal scrolling, so the
+                // whole selector is visible at once and nothing can end up off-screen.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 14.dp, end = 14.dp, bottom = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                // 1) "Мой супермикс"
                 val supermixLabel = stringResource(Res.string.my_mix_supermix)
-                petals +=
-                    MoodPetal(
-                        label = supermixLabel,
-                        selected = !isLikesSelected,
-                        emphasized = true,
-                        primary = fieldColor,
-                        secondary = waveSecondary,
-                        emojis = pickEmojis(supermixLabel),
-                    ) { playOffline() }
-            }
-            if (!offline) {
-                superMix?.let { mix ->
-                    // The personal mix leads the fan and is drawn first-class: it is the one entry
-                    // that follows the listener rather than a theme.
-                    val supermixLabel = stringResource(Res.string.my_mix_supermix)
-                    petals +=
-                        MoodPetal(
-                            label = supermixLabel,
-                            selected = !isLikesSelected && mix.browseId == selectedMix?.browseId,
-                            emphasized = true,
-                            primary = fieldColor,
-                            secondary = waveSecondary,
-                            emojis = pickEmojis(supermixLabel),
-                        ) {
-                            selectedMoodId = mix.browseId
-                            scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
-                            playMix(mix)
+                MoodCard(
+                    label = supermixLabel,
+                    primaryColor = fieldColor,
+                    secondaryColor = waveSecondary,
+                    selected = supermixSelected,
+                    onClick = {
+                        if (offline) {
+                            playOffline()
+                        } else {
+                            superMix?.let { mix ->
+                                selectedMoodId = mix.browseId
+                                scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
+                                playMix(mix)
+                            } ?: playOffline()
                         }
-                }
-            }
-            // The liked-tracks petal gets its own gradient too: with the theme colours it landed on
-            // the same blue as the surface behind it and disappeared into the page.
-            val likesPalette = MOOD_PETAL_PALETTES[moodMixes.size % MOOD_PETAL_PALETTES.size]
-            val likesLabel = stringResource(Res.string.my_mix_no_mood)
-            petals +=
-                MoodPetal(
+                    },
+                )
+
+                // 2) "Любимые треки"
+                val likesLabel = stringResource(Res.string.my_mix_no_mood)
+                MoodCard(
                     label = likesLabel,
-                    selected = isLikesSelected,
-                    emphasized = false,
-                    primary = likesPalette.first,
-                    secondary = likesPalette.second,
-                    emojis = pickEmojis(likesLabel),
-                ) {
-                    selectedMoodId = LIKES_MOOD_ID
-                    scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, LIKES_MOOD_ID) }
-                    playLikes()
-                }
-            if (!offline) {
-                moodMixes.forEachIndexed { index, mix ->
-                    val palette = MOOD_PETAL_PALETTES[index % MOOD_PETAL_PALETTES.size]
-                    val moodLabel = cleanMoodName(mix.title).ifBlank { mix.title }
-                    petals +=
-                        MoodPetal(
-                            label = moodLabel,
-                            selected = !isLikesSelected && mix.browseId == selectedMix?.browseId,
-                            emphasized = false,
-                            primary = palette.first,
-                            secondary = palette.second,
-                            emojis = pickEmojis(moodLabel),
-                        ) {
-                            selectedMoodId = mix.browseId
-                            scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
-                            playMix(mix)
-                        }
-                }
-                // The whole shelf lives behind this petal, so the fan does not have to hold every
-                // mood at once.
+                    primaryColor = likesPalette.first,
+                    secondaryColor = likesPalette.second,
+                    shape = HeartShape,
+                    labelAlignment = Alignment.Center,
+                    selected = likesSelected,
+                    onClick = {
+                        selectedMoodId = LIKES_MOOD_ID
+                        scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, LIKES_MOOD_ID) }
+                        playLikes()
+                    },
+                )
+
+                // 3) "Все настроения"
                 val allMoodsLabel = stringResource(Res.string.my_mix_all_moods)
-                petals +=
-                    MoodPetal(
-                        label = allMoodsLabel,
-                        selected = false,
-                        emphasized = false,
-                        primary = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        secondary = MaterialTheme.colorScheme.surfaceContainerHighest,
-                        emojis = pickEmojis(allMoodsLabel),
-                    ) { showAllMoods = true }
+                val allMoodsCollageUrls = remember(moodMixes) {
+                    moodMixes.take(4).map { it.thumbnails.lastOrNull()?.url }
+                }
+                MoodCard(
+                    label = allMoodsLabel,
+                    primaryColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    secondaryColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    shape = BlobShape,
+                    selected = false,
+                    alpha = if (offline) 0.45f else 1f,
+                    collageUrls = allMoodsCollageUrls,
+                    onClick = {
+                        if (allMoodsAvailable) {
+                            showAllMoods = true
+                        }
+                    },
+                )
             }
-
-            // The focused petal is a local piece of state: it follows the selection, but dragging
-            // the fan can browse the shelf without starting anything.
-            var petalFocus by remember(petals.size) { mutableStateOf(0) }
-            LaunchedEffect(selectedMoodId, petals.size) {
-                val selectedIndex = petals.indexOfFirst { it.selected }
-                if (selectedIndex >= 0) petalFocus = selectedIndex
-            }
-
-            MoodPetalFan(
-                petals = petals,
-                focus = petalFocus,
-                onFocusChange = { petalFocus = it },
-            )
         }
 
         if (showAllMoods) {
@@ -1394,7 +1330,7 @@ private fun MoodGridTile(
             } else {
                 MaterialTheme.colorScheme.onSurface
             },
-            maxLines = 2,
+            maxLines = 3,
             overflow = TextOverflow.Ellipsis,
         )
     }
@@ -1489,7 +1425,7 @@ private fun MyMixNowPlaying(
             ),
             color = Color.White,
             textAlign = TextAlign.Center,
-            maxLines = 2,
+            maxLines = 3,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
@@ -1615,7 +1551,7 @@ private fun MyMixNowPlaying(
             horizontalArrangement = Arrangement.spacedBy(26.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // requiredSize, not size: the hero is height-constrained by the mood fan, and a plain
+            // requiredSize, not size: the hero is height-constrained by the mood row, and a plain
             // size() is clamped by the incoming constraint, which turned the round button into an
             // oval on tall phones.
             IconButton(onClick = onPrevious, modifier = Modifier.requiredSize(46.dp)) {
@@ -1652,355 +1588,293 @@ private fun MyMixNowPlaying(
     }
 }
 
+private val MOOD_CARD_WIDTH = 102.dp
+private val MOOD_CARD_HEIGHT = 118.dp
+private val MOOD_CARD_CORNER_RADIUS = 28.dp
+
 /**
- * One petal of the mood fan. Built once per composition; tapping it both focuses the fan and starts
- * the mood, which is the behaviour the pill row had.
+ * Fork: mood cards are tinted from their own palette instead of the theme containers.
+ *
+ * These pairs are picked to stay legible white-on-gradient and to differ from each other.
  */
-private class MoodPetal(
-    val label: String,
-    val selected: Boolean,
-    val emphasized: Boolean,
-    val primary: Color,
-    val secondary: Color,
-    val emojis: List<String> = emptyList(),
-    val onClick: () -> Unit,
+private val MOOD_PALETTES = listOf(
+    Color(0xFF7B2FF7) to Color(0xFFB14BFF),
+    Color(0xFF0F6FFF) to Color(0xFF37C2FF),
+    Color(0xFFFF5A3C) to Color(0xFFFFA53D),
+    Color(0xFF0E9F6E) to Color(0xFF6EE7B7),
+    Color(0xFFD9168C) to Color(0xFFFF6FA5),
+    Color(0xFF4C1D95) to Color(0xFF8B5CF6),
+    Color(0xFF0E7490) to Color(0xFF22D3EE),
+    Color(0xFFB45309) to Color(0xFFFBBF24),
 )
 
 /**
- * Fork: the mood shelf drawn as a carousel row of oval petals instead of a scrolling row.
- *
- * A circular fan of mood cards arranged along a large circular arc (R = 760 dp) rising from below the screen.
- *
- * Each card is a tall portrait oval (150 x 210 dp). Dragging rotates that arc like a carousel wheel: the card that
- * comes to the top-centre (angle 0) is the focused one, while neighbouring cards lean away (13° step)
- * and sink towards the bottom corners. A chord distance of ~172 dp leaves ~22 dp of visible air between
- * 150 dp ovals so neighbours never touch.
- *
- * The whole carousel is driven by ONE animated float — the position on the shelf, in petals. Every
- * card's rotation, scale, arc translation and opacity is derived from it inside the draw phase.
- * All petals are composed together so no cards pop in mid-gesture. Cards near the corners and bottom
- * are clipped by the container Box, giving the impression of growing from behind the bottom bar.
+ * A classic heart shape filling the card bounds with its pointed tip at the bottom center
+ * and cleft at the top center. Used for the "Любимые треки" card.
  */
-@Composable
-private fun MoodPetalFan(
-    petals: List<MoodPetal>,
-    focus: Int,
-    onFocusChange: (Int) -> Unit,
-) {
-    if (petals.isEmpty()) return
-    val scope = rememberCoroutineScope()
-    val density = LocalDensity.current
-    val rPx = with(density) { MOOD_ARC_RADIUS.toPx() }
-    val stepHalfRad = ((MOOD_ANGLE_STEP_DEG / 2f) * PI / 180.0).toFloat()
-    val chordPx = 2f * rPx * sin(stepHalfRad)
-    val offset = remember { Animatable(focus.toFloat()) }
-    val settle = spring<Float>(dampingRatio = 0.78f, stiffness = Spring.StiffnessMediumLow)
+private object HeartShape : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density,
+    ): Outline {
+        val width = size.width
+        val height = size.height
+        val path = Path().apply {
+            // Start at the top cleft of the heart
+            moveTo(width * 0.5f, height * 0.25f)
 
-    fun settleOn(target: Int) {
-        val bounded = target.coerceIn(0, petals.lastIndex)
-        onFocusChange(bounded)
-        scope.launch { offset.animateTo(bounded.toFloat(), settle) }
-    }
+            // Left top lobe
+            cubicTo(
+                x1 = width * 0.25f,
+                y1 = 0f,
+                x2 = 0f,
+                y2 = height * 0.12f,
+                x3 = 0f,
+                y3 = height * 0.42f,
+            )
 
-    // Selection changed from outside (a tap, the mood picker, a mood restored from DataStore):
-    // glide to the petal instead of cutting.
-    LaunchedEffect(focus) {
-        if (abs(offset.value - focus.toFloat()) > 0.01f) offset.animateTo(focus.toFloat(), settle)
-    }
+            // Left lower curve converging to the bottom point
+            cubicTo(
+                x1 = 0f,
+                y1 = height * 0.68f,
+                x2 = width * 0.30f,
+                y2 = height * 0.86f,
+                x3 = width * 0.5f,
+                y3 = height,
+            )
 
-    Box(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                // The carousel sits at the bottom of the page; cards rise from the bottom edge along
-                // the R = 760 dp circular arc. The focused card hangs with its centre 150 dp above
-                // the bottom (45 dp bottom clearance for its 210 dp height), while neighbouring cards
-                // sink towards the corners and clip against the container edges.
-                .height(228.dp)
-                // Keeps the focused petal clear of the transport above it.
-                .padding(top = 18.dp)
-                .clipToBounds()
-                .padding(bottom = 45.dp)
-                .pointerInput(petals.size) {
-                    detectHorizontalDragGestures(
-                        onDragStart = {},
-                        onDragEnd = { settleOn(offset.value.roundToInt()) },
-                        onDragCancel = { settleOn(offset.value.roundToInt()) },
-                        onHorizontalDrag = { change, dragAmount ->
-                            change.consume()
-                            val next =
-                                (offset.value - dragAmount / chordPx)
-                                    .coerceIn(0f, petals.lastIndex.toFloat())
-                            scope.launch { offset.snapTo(next) }
-                        },
-                    )
-                },
-        contentAlignment = Alignment.BottomCenter,
-    ) {
-        // Farthest first, so the focused petal ends up on top of the carousel. Every card is composed
-        // at once so nothing pops in mid-gesture; the draw phase fades distant cards smoothly.
-        petals.indices
-            .sortedByDescending { abs(it - focus) }
-            .forEach { index ->
-                MoodCard(
-                    // Pass the real label unconditionally; distance-based labelAlpha in the draw
-                    // phase smoothly fades neighbours without popping or recomposition.
-                    label = petals[index].label,
-                    selected = petals[index].selected,
-                    focused = index == focus,
-                    emphasized = petals[index].emphasized,
-                    primaryColor = petals[index].primary,
-                    secondaryColor = petals[index].secondary,
-                    emojis = petals[index].emojis,
-                    // Soft falloff: every composed card shows its label at all times (never below ~0.55 alpha),
-                    // while the centre card reads strongest. Evaluated in draw phase without per-frame recomposition.
-                    labelAlpha = { (1f - abs(index - offset.value) * 0.18f).coerceIn(0.55f, 1f) },
-                    modifier =
-                        Modifier
-                            .zIndex(-abs(index - focus).toFloat())
-                            .graphicsLayer {
-                                val a = (index - offset.value) * MOOD_ANGLE_STEP_DEG
-                                val aRad = (a * PI / 180.0).toFloat()
-                                translationX = rPx * sin(aRad)
-                                translationY = rPx * (1f - cos(aRad))
-                                rotationZ = a
-                                transformOrigin = TransformOrigin(0.5f, 1.0f)
-                                val scale = 0.94f.pow(abs(a) / MOOD_ANGLE_STEP_DEG).coerceAtLeast(0.62f)
-                                scaleX = scale
-                                scaleY = scale
-                                alpha = (1f - abs(a) / 45f).coerceIn(0.25f, 1f)
-                            },
-                    onClick = {
-                        settleOn(index)
-                        petals[index].onClick()
-                    },
-                )
-            }
+            // Right lower curve from the bottom point upwards
+            cubicTo(
+                x1 = width * 0.70f,
+                y1 = height * 0.86f,
+                x2 = width,
+                y2 = height * 0.68f,
+                x3 = width,
+                y3 = height * 0.42f,
+            )
+
+            // Right top lobe closing back to the cleft
+            cubicTo(
+                x1 = width,
+                y1 = height * 0.12f,
+                x2 = width * 0.75f,
+                y2 = 0f,
+                x3 = width * 0.5f,
+                y3 = height * 0.25f,
+            )
+
+            close()
+        }
+        return Outline.Generic(path)
     }
 }
 
 /**
- * Geometry constants for the circular mood carousel.
- *
- * Cards are tall portrait ovals (150 x 210 dp) arranged along a circular arc with radius R = 760 dp
- * whose centre sits far below the screen. The angle between adjacent cards is 13 degrees, yielding
- * a chord distance of 2 * R * sin(13° / 2) ≈ 172.07 dp between neighbour anchors. Because each card is
- * 150 dp wide, this guarantees ~22 dp of visible air between neighbouring ovals so they never touch.
+ * An organic asymmetric blob ("клякса") shape constructed deterministically from smooth
+ * cubic beziers inside the card bounds. Used for the "Все настроения" card.
  */
-private val MOOD_ARC_RADIUS = 780.dp
-private const val MOOD_ANGLE_STEP_DEG = 9.5f
-private val MOOD_CHORD_STEP = 172.dp
-private val MOOD_CARD_WIDTH = 126.dp
-private val MOOD_CARD_HEIGHT = 154.dp
+private object BlobShape : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density,
+    ): Outline {
+        val width = size.width
+        val height = size.height
+        val path = Path().apply {
+            moveTo(width * 0.38f, height * 0.04f)
+            // Top to top-right
+            cubicTo(
+                x1 = width * 0.58f,
+                y1 = height * 0.02f,
+                x2 = width * 0.76f,
+                y2 = height * 0.05f,
+                x3 = width * 0.88f,
+                y3 = height * 0.14f,
+            )
+            // Top-right to right bulge
+            cubicTo(
+                x1 = width * 0.96f,
+                y1 = height * 0.20f,
+                x2 = width,
+                y2 = height * 0.38f,
+                x3 = width * 0.98f,
+                y3 = height * 0.56f,
+            )
+            // Right bulge to bottom-right
+            cubicTo(
+                x1 = width * 0.96f,
+                y1 = height * 0.74f,
+                x2 = width * 0.86f,
+                y2 = height * 0.94f,
+                x3 = width * 0.68f,
+                y3 = height * 0.96f,
+            )
+            // Bottom-right to bottom-left
+            cubicTo(
+                x1 = width * 0.52f,
+                y1 = height * 0.98f,
+                x2 = width * 0.34f,
+                y2 = height * 0.96f,
+                x3 = width * 0.16f,
+                y3 = height * 0.90f,
+            )
+            // Bottom-left to left-mid
+            cubicTo(
+                x1 = width * 0.05f,
+                y1 = height * 0.84f,
+                x2 = 0f,
+                y2 = height * 0.66f,
+                x3 = width * 0.02f,
+                y3 = height * 0.46f,
+            )
+            // Left-mid back to top
+            cubicTo(
+                x1 = width * 0.04f,
+                y1 = height * 0.24f,
+                x2 = width * 0.18f,
+                y2 = height * 0.06f,
+                x3 = width * 0.38f,
+                y3 = height * 0.04f,
+            )
+            close()
+        }
+        return Outline.Generic(path)
+    }
+}
 
 /**
- * A curated pool of 12 thematic emoji sets (3-5 faint glyphs each) used as fallbacks
- * and for advancing adjacent cards to avoid duplicate textures.
+ * 2x2 collage of up to four mood covers. Each cell occupies a quarter of the card.
+ * Empty cells remain transparent to reveal the card's underlying gradient.
  */
-private val CURATED_EMOJI_POOL: List<List<String>> = listOf(
-    listOf("✨", "💫", "🎵", "🌟"),
-    listOf("🎸", "🥁", "🤘", "🔥"),
-    listOf("☕", "🥐", "🌤️", "📖"),
-    listOf("🌴", "🌊", "☀️", "🏄"),
-    listOf("🌌", "🪐", "🛸", "✨"),
-    listOf("🌸", "🍃", "🦋", "🌿"),
-    listOf("🎹", "🎼", "🎻", "✨"),
-    listOf("🌆", "🌃", "🏮", "✨"),
-    listOf("👾", "🕹️", "🎮", "⚡"),
-    listOf("🔮", "🪄", "🕯️", "✨"),
-    listOf("🍁", "🍂", "☕", "🧣"),
-    listOf("❄️", "☃️", "🏔️", "☕"),
-)
+@Composable
+private fun MoodCollage(
+    urls: List<String?>,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier.fillMaxSize()) {
+        Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            MoodCollageCell(url = urls.getOrNull(0), modifier = Modifier.weight(1f).fillMaxHeight())
+            MoodCollageCell(url = urls.getOrNull(1), modifier = Modifier.weight(1f).fillMaxHeight())
+        }
+        Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            MoodCollageCell(url = urls.getOrNull(2), modifier = Modifier.weight(1f).fillMaxHeight())
+            MoodCollageCell(url = urls.getOrNull(3), modifier = Modifier.weight(1f).fillMaxHeight())
+        }
+    }
+}
 
-/**
- * Maps mood names to fitting emoji patterns by meaning. Evaluates lowercased keywords for
- * Russian mood categories shown in this fork (falling back to a deterministic selection from
- * [CURATED_EMOJI_POOL]).
- */
-private fun resolveMoodEmojis(label: String): List<String> {
-    val lower = label.lowercase()
-    return when {
-        // "отдых/сон/ночь/спокой" -> 🌙💤🛌✨
-        listOf("отдых", "сон", "ночь", "спокой", "relax", "sleep", "chill", "calm").any { it in lower } ->
-            listOf("🌙", "💤", "🛌", "✨")
-        // "бодр/энерг/заряд" -> ⚡🔥🏃💥
-        listOf("бодр", "энерг", "заряд", "energy", "power", "wake").any { it in lower } ->
-            listOf("⚡", "🔥", "🏃", "💥")
-        // "вечерин/тусов/танц" -> 🎉🪩🍾💃
-        listOf("вечерин", "тусов", "танц", "party", "dance", "club").any { it in lower } ->
-            listOf("🎉", "🪩", "🍾", "💃")
-        // "дорог/путь/поезд" -> 🚗🛣️🧳🎧
-        listOf("дорог", "путь", "поезд", "road", "drive", "travel", "trip").any { it in lower } ->
-            listOf("🚗", "🛣️", "🧳", "🎧")
-        // "работ/фокус/концентр" -> 🎯💻📚🧠
-        listOf("работ", "фокус", "концентр", "work", "focus", "study").any { it in lower } ->
-            listOf("🎯", "💻", "📚", "🧠")
-        // "романт/любов" -> 💜💞🌹✨
-        listOf("романт", "любов", "люб", "love", "romance").any { it in lower } ->
-            listOf("💜", "💞", "🌹", "✨")
-        // "спорт/трениров" -> 🏋️🥊🏃🔥
-        listOf("спорт", "трениров", "sport", "workout", "gym", "fitness").any { it in lower } ->
-            listOf("🏋️", "🥊", "🏃", "🔥")
-        // "груст/меланх/дожд" -> 🌧️💧🫧🌫️
-        listOf("груст", "меланх", "дожд", "sad", "rain", "melancholy", "grief").any { it in lower } ->
-            listOf("🌧️", "💧", "🫧", "🌫️")
-        else -> {
-            val poolIndex = (label.hashCode() and Int.MAX_VALUE) % CURATED_EMOJI_POOL.size
-            CURATED_EMOJI_POOL[poolIndex]
+@Composable
+private fun MoodCollageCell(
+    url: String?,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier) {
+        if (!url.isNullOrBlank()) {
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
         }
     }
 }
 
 /**
- * One petal's gradient and background emoji texture.
+ * Fork: a mood card in the horizontal row under the player.
  *
- * Each palette carries a small set of thematic emoji picked to read as a faint, organic
- * pattern rather than content.
- */
-private data class MoodPetalPalette(
-    val first: Color,
-    val second: Color,
-    val emojis: List<String>,
-)
-
-/**
- * Fork: the mood petals are tinted from their own palette instead of the theme containers.
- *
- * On a dark theme the container colours of neighbouring moods came out nearly identical, so the fan
- * read as one grey blob. These pairs are picked to stay legible white-on-gradient and to differ from
- * each other, the way the mood cards of Yandex Music do.
- */
-private val MOOD_PETAL_PALETTES = listOf(
-    MoodPetalPalette(
-        Color(0xFF7B2FF7),
-        Color(0xFFB14BFF),
-        listOf("✨", "🔮", "🪐", "💫"),
-    ),
-    MoodPetalPalette(
-        Color(0xFF0F6FFF),
-        Color(0xFF37C2FF),
-        listOf("☁️", "🫧", "🌊", "❄️"),
-    ),
-    MoodPetalPalette(
-        Color(0xFFFF5A3C),
-        Color(0xFFFFA53D),
-        listOf("🔥", "⚡", "💥", "☀️"),
-    ),
-    MoodPetalPalette(
-        Color(0xFF0E9F6E),
-        Color(0xFF6EE7B7),
-        listOf("🍃", "🌿", "🌱", "🍀"),
-    ),
-    MoodPetalPalette(
-        Color(0xFFD9168C),
-        Color(0xFFFF6FA5),
-        listOf("🎉", "🪩", "💖", "✨"),
-    ),
-    MoodPetalPalette(
-        Color(0xFF4C1D95),
-        Color(0xFF8B5CF6),
-        listOf("🌙", "⭐", "🌌", "🪐"),
-    ),
-    MoodPetalPalette(
-        Color(0xFF0E7490),
-        Color(0xFF22D3EE),
-        listOf("💧", "🌊", "🫧", "🌧️"),
-    ),
-    MoodPetalPalette(
-        Color(0xFFB45309),
-        Color(0xFFFBBF24),
-        listOf("🌅", "🍂", "☕", "✨"),
-    ),
-)
-
-
-/**
- * Fork: a large mood card — the petal of the mood fan.
- *
- * Card is a soft vertical gradient built from the theme / accent colours already on this screen,
- * so no new palette is introduced. Selected cards are full-opacity with a 1 dp rim; unselected
- * cards sit at 65 % alpha so the selected one reads clearly without the others disappearing.
- * A scattered, faint emoji pattern gives each mood petal its own tactile texture behind the label.
- * The fan supplies the placement (offset, rotation, scale) through [modifier].
+ * Each card can have its own custom [shape] (e.g., rounded rectangle, heart, or organic blob).
+ * The content and the press indication are clipped by [shape].
  */
 @Composable
 private fun MoodCard(
     label: String,
-    selected: Boolean,
-    emphasized: Boolean,
-    focused: Boolean = false,
     primaryColor: Color,
     secondaryColor: Color,
-    emojis: List<String> = emptyList(),
-    labelAlpha: () -> Float = { 1f },
     modifier: Modifier = Modifier,
+    shape: Shape = RoundedCornerShape(24.dp),
+    // The heart and the blob both narrow towards their bottom, so their label lives in the middle,
+    // where the shape is widest; only the rounded rectangle keeps a bottom-start label.
+    labelAlignment: Alignment =
+        if (shape === HeartShape || shape === BlobShape) Alignment.Center else Alignment.BottomStart,
+    selected: Boolean = false,
+    alpha: Float = 1f,
+    collageUrls: List<String?>? = null,
     onClick: () -> Unit,
 ) {
-    // The focused petal is painted at full strength even when it is not the one playing: the fan
-    // would otherwise look like the middle card is the disabled one.
-    val cardAlpha = if (selected || focused) 1f else 0.65f
-
     Surface(
-        // Fork: the rim is the only selection indicator — no background swap, so the gradient stays
-        // visible and the selected card does not look like a different component.
         color = Color.Transparent,
-        shape = RoundedCornerShape(percent = 50),
-        border = if (selected || focused) {
-            BorderStroke(1.5.dp, Color.White.copy(alpha = if (focused) 0.9f else 0.85f))
-        } else if (emphasized) {
-            BorderStroke(1.dp, Color.White.copy(alpha = 0.45f))
+        shape = shape,
+        border = if (selected) {
+            BorderStroke(1.5.dp, Color.White.copy(alpha = 0.85f))
         } else {
             null
         },
         modifier = modifier
             .width(MOOD_CARD_WIDTH)
             .height(MOOD_CARD_HEIGHT)
-            .clip(RoundedCornerShape(percent = 50))
-            .clickable { onClick() },
+            .graphicsLayer { this.alpha = alpha }
+            .clip(shape)
+            .clickable(onClick = onClick),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(RoundedCornerShape(percent = 50))
+                .clip(shape)
                 .background(
                     Brush.verticalGradient(
-                        0f to primaryColor.copy(alpha = 0.85f * cardAlpha),
-                        1f to secondaryColor.copy(alpha = 0.95f * cardAlpha),
+                        0f to primaryColor.copy(alpha = 0.85f),
+                        1f to secondaryColor.copy(alpha = 0.95f),
                     ),
-                    shape = RoundedCornerShape(percent = 50),
-                )
-
+                    shape = shape,
+                ),
         ) {
-            // Soft scrim behind the label row, so the title keeps its contrast on the gradient.
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(78.dp)
-                    .align(Alignment.BottomCenter)
-                    .graphicsLayer { alpha = labelAlpha() }
-                    .background(
-                        Brush.verticalGradient(
-                            0f to Color.Transparent,
-                            1f to secondaryColor.copy(alpha = 0.55f * cardAlpha),
+            if (collageUrls != null) {
+                // 2x2 collage of mood artwork previews
+                MoodCollage(urls = collageUrls)
+                // Translucent scrim (~35% black) over the collage so the white label stays readable
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.35f)),
+                )
+            } else {
+                // Soft scrim behind the label row, so the title keeps its contrast on the gradient
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(78.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            Brush.verticalGradient(
+                                0f to Color.Transparent,
+                                1f to secondaryColor.copy(alpha = 0.55f),
+                            ),
                         ),
-                    ),
-            )
-
-            // The text column fades in with the petal's distance to the fan center
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 14.dp, end = 14.dp, bottom = 44.dp)
-                    .graphicsLayer { alpha = labelAlpha() },
-            ) {
-                Text(
-                    text = label,
-                    style = typo().bodyLarge.copy(fontWeight = FontWeight.Bold),
-                    color = Color.White,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
+
+            val isCentered = labelAlignment == Alignment.Center
+            Text(
+                text = label,
+                // Shared 11 sp font size with maxLines = 2 and softWrap = true ensures words like
+                // "настроения" fit on a single line (86 dp inner width vs ~60 dp text width).
+                style = typo().bodySmall.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                color = Color.White,
+                maxLines = 2,
+                softWrap = true,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = if (isCentered) TextAlign.Center else TextAlign.Start,
+                modifier = Modifier
+                    .align(labelAlignment)
+                    .padding(
+                        start = 8.dp,
+                        end = 8.dp,
+                        bottom = if (isCentered) 12.dp else 8.dp,
+                    ),
+            )
         }
     }
 }
