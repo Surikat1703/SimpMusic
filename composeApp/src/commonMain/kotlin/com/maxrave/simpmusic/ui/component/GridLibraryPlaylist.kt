@@ -115,6 +115,9 @@ internal inline fun <reified T> GridLibraryPlaylist(
     // the scroll offset by hand, which is what left a screen-tall hole above the Wrapped tab.
     noinline header: (@Composable () -> Unit)? = null,
     noinline createNewPlaylist: (() -> Unit)? = null,
+    // Optional click override for PlaylistsResult tiles (e.g. Mix for you starts playback directly).
+    // Returning true indicates the click was handled and the default navigation should be skipped.
+    noinline onPlaylistSelected: ((PlaylistsResult) -> Boolean)? = null,
     noinline onReload: () -> Unit,
 ) {
     Logger.w("GridLibraryPlaylist", "Generic Type: ${T::class.simpleName}")
@@ -249,12 +252,16 @@ internal inline fun <reified T> GridLibraryPlaylist(
                                     }
 
                                     is PlaylistsResult -> {
-                                        navController.navigate(
-                                            PlaylistDestination(
-                                                item.browseId,
-                                                isYourYouTubePlaylist = true,
-                                            ),
-                                        )
+                                        // Give the custom handler the first chance to consume the selection
+                                        // (e.g. playing the mix directly without opening the playlist screen).
+                                        if (onPlaylistSelected?.invoke(item) != true) {
+                                            navController.navigate(
+                                                PlaylistDestination(
+                                                    item.browseId,
+                                                    isYourYouTubePlaylist = true,
+                                                ),
+                                            )
+                                        }
                                     }
 
                                     is AlbumEntity -> {

@@ -58,11 +58,29 @@ import dev.chrisbanes.haze.rememberHazeState
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.http.Url
+import com.maxrave.common.Config
+import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
+import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
+import com.maxrave.domain.mediaservice.handler.PlaylistType as QueuePlaylistType
+import kotlinx.coroutines.flow.first
+import com.maxrave.domain.mediaservice.handler.QueueData
+import com.maxrave.domain.repository.PlaylistRepository
+import com.maxrave.domain.utils.Resource
+import com.maxrave.domain.utils.isRadioPlaylistId
+import com.maxrave.simpmusic.ui.navigation.destination.library.MixForYouDestination
+import com.maxrave.simpmusic.viewModel.SharedViewModel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.runtime.rememberCoroutineScope
 import org.jetbrains.compose.resources.stringResource
+import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import simpmusic.composeapp.generated.resources.Res
+import simpmusic.composeapp.generated.resources.auto_created_by_youtube_music
 import simpmusic.composeapp.generated.resources.mix_for_you
 import simpmusic.composeapp.generated.resources.no_mixes_found
+import simpmusic.composeapp.generated.resources.radio
+import simpmusic.composeapp.generated.resources.view_count
 
 /**
  * The YouTube "Mix for you" playlists, promoted out of the Library chip row into a tab of its own.
@@ -88,6 +106,67 @@ fun MixForYouOriginalScreen(
     val mixForYou by viewModel.youTubeMixForYou.collectAsStateWithLifecycle()
     val hazeState = rememberHazeState()
     val gridState = rememberLazyGridState()
+
+    // Fork: tapping a tile on this shelf is not "open the playlist screen" any more — the owner wants
+    // the mix to start right away and the app to fall back to the My Mix tab, where its player lives.
+    // The tap runs the same queue push the tab's own `playMix` does, then pops back to the tab.
+    val sharedViewModel: SharedViewModel = koinInject()
+    val playlistRepository: PlaylistRepository = koinInject()
+    val scope = rememberCoroutineScope()
+    val viewCountLabel = stringResource(Res.string.view_count)
+    val radioLabel = stringResource(Res.string.radio)
+    val autoCreatedByYtMusic = stringResource(Res.string.auto_created_by_youtube_music)
+    val onPlaylistSelected: (PlaylistsResult) -> Boolean =
+        remember(navController) {
+            { mix ->
+                scope.launch {
+                    runCatching {
+                        val isRadio = mix.browseId.isRadioPlaylistId()
+                        val fetched =
+                            withTimeoutOrNull(30_000) {
+                                val flow =
+                                    if (isRadio) {
+                                        playlistRepository.getRadio(
+                                            radioId = mix.browseId,
+                                            defaultDescription = autoCreatedByYtMusic,
+                                            radioString = radioLabel,
+                                            viewString = viewCountLabel,
+                                        )
+                                    } else {
+                                        playlistRepository.getPlaylistData(
+                                            playlistId = mix.browseId,
+                                            viewString = viewCountLabel,
+                                        )
+                                    }
+                                flow.first()
+                            }
+                        val pair = (fetched as? Resource.Success<Pair<PlaylistBrowse, String?>>)?.data
+                        val tracks = pair?.first?.tracks.orEmpty()
+                        if (tracks.isEmpty()) return@runCatching
+                        sharedViewModel.setQueueData(
+                            QueueData.Data(
+                                listTracks = tracks,
+                                firstPlayedTrack = tracks.first(),
+                                playlistId = mix.browseId,
+                                playlistName = mix.title,
+                                playlistType = if (isRadio) QueuePlaylistType.RADIO else QueuePlaylistType.PLAYLIST,
+                                continuation = pair?.second,
+                            ),
+                        )
+                        sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
+                        // Back to the tab that owns the player. The fallback covers the case where this
+                        // screen was opened as the start destination and the tab is not on the stack.
+                        if (!navController.popBackStack(MixForYouDestination, inclusive = false)) {
+                            navController.navigate(MixForYouDestination) {
+                                popUpTo(MixForYouDestination) { inclusive = false }
+                            }
+                        }
+                    }
+                }
+                true
+            }
+        }
+
     // Home's rule, verbatim: transparent only while pixel-0 is on screen. onScrolling is too
     // coarse for this — it stays "on top" through the whole first row. The frost itself is kept
     // light (below), so frosting over the glow reads as a veil rather than a lid.
@@ -172,6 +251,7 @@ fun MixForYouOriginalScreen(
             emptyText = Res.string.no_mixes_found,
             state = gridState,
             onScrolling = onScrolling,
+            onPlaylistSelected = onPlaylistSelected,
         ) {
             viewModel.getYouTubeMixedForYou()
         }
