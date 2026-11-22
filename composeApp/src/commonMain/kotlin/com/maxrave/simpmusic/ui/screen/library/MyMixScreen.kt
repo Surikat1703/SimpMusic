@@ -1109,17 +1109,18 @@ fun MyMixScreen(
             // and the entry into all moods. Horizontally scrollable so it fits any screen width
             // without clipping shadows or vertically scrolling the page.
             val likesPalette = MOOD_PALETTES[moodMixes.size % MOOD_PALETTES.size]
-            val supermixSelected = !isLikesSelected && (offline || superMix?.browseId == selectedMix?.browseId)
-            val likesSelected = isLikesSelected
-            // Fork: "Все настроения" represents shelf mixes. Selected when the started mix came from
-            // the shelf (not null, not Likes, not offline mode, and not the personal supermix).
-            // Supermix and Likes maintain priority and conditions do not overlap.
-            val allMoodsSelected = !offline &&
-                !supermixSelected &&
-                startedMixId != null &&
+            // Fork: a mix started from the "Mix for you" shelf is not one of the two first cards, so
+            // the blob is the only one that can own it. It takes priority there, and only there:
+            // every other case keeps the old rule untouched (`offline || selectedMix == superMix`).
+            val isShelfMixStarted = startedMixId != null &&
                 startedMixId != LIKES_MOOD_ID &&
                 startedMixId != OFFLINE_MODE_ID &&
                 startedMixId != superMix?.browseId
+            val supermixSelected = !isLikesSelected &&
+                !isShelfMixStarted &&
+                (offline || superMix?.browseId == selectedMix?.browseId)
+            val likesSelected = isLikesSelected
+            val allMoodsSelected = !likesSelected && isShelfMixStarted
 
             Row(
                 // Three cards share the full width of the screen: no horizontal scrolling, so the
