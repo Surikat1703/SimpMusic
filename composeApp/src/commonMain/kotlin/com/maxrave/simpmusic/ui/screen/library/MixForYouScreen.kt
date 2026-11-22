@@ -58,6 +58,8 @@ import dev.chrisbanes.haze.rememberHazeState
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.http.Url
+import com.maxrave.domain.manager.DataStoreManager
+import com.maxrave.simpmusic.ui.screen.library.MyMixPrefs
 import com.maxrave.common.Config
 import com.maxrave.domain.data.model.browse.playlist.PlaylistBrowse
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
@@ -112,12 +114,13 @@ fun MixForYouOriginalScreen(
     // The tap runs the same queue push the tab's own `playMix` does, then pops back to the tab.
     val sharedViewModel: SharedViewModel = koinInject()
     val playlistRepository: PlaylistRepository = koinInject()
+    val dataStoreManager: DataStoreManager = koinInject()
     val scope = rememberCoroutineScope()
     val viewCountLabel = stringResource(Res.string.view_count)
     val radioLabel = stringResource(Res.string.radio)
     val autoCreatedByYtMusic = stringResource(Res.string.auto_created_by_youtube_music)
     val onPlaylistSelected: (PlaylistsResult) -> Boolean =
-        remember(navController) {
+        remember(navController, dataStoreManager) {
             { mix ->
                 scope.launch {
                     runCatching {
@@ -154,6 +157,10 @@ fun MixForYouOriginalScreen(
                             ),
                         )
                         sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
+                        // Fork: record the started mix in DataStore so MyMixScreen's "Все настроения"
+                        // card displays its selection rim when returning to the tab.
+                        dataStoreManager.putString(MyMixPrefs.STARTED_ID, mix.browseId)
+                        dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId)
                         // Back to the tab that owns the player. The fallback covers the case where this
                         // screen was opened as the start destination and the tab is not on the stack.
                         if (!navController.popBackStack(MixForYouDestination, inclusive = false)) {

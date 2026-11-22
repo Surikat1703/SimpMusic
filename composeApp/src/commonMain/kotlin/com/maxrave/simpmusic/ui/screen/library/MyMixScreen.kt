@@ -369,12 +369,16 @@ fun MyMixScreen(
         }
     }
 
-    var selectedMoodId by remember { mutableStateOf<String?>(null) }
-    var startedMixId by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
-        selectedMoodId = dataStoreManager.getString(MyMixPrefs.MOOD_ID).first()?.takeIf { it.isNotBlank() }
-        startedMixId = dataStoreManager.getString(MyMixPrefs.STARTED_ID).first()?.takeIf { it.isNotBlank() }
-    }
+    // Fork: reactive observation of the last started source and selected mood.
+    // Driven by DataStore flows so returning from other destinations (like the shelf)
+    // immediately updates card selection and colors without tab recreation.
+    val selectedMoodIdRaw by dataStoreManager.getString(MyMixPrefs.MOOD_ID)
+        .collectAsStateWithLifecycle(initialValue = null)
+    val selectedMoodId = selectedMoodIdRaw?.takeIf { it.isNotBlank() }
+
+    val startedMixIdRaw by dataStoreManager.getString(MyMixPrefs.STARTED_ID)
+        .collectAsStateWithLifecycle(initialValue = null)
+    val startedMixId = startedMixIdRaw?.takeIf { it.isNotBlank() }
     val selectedMix = effectiveMixes.firstOrNull { it.browseId == selectedMoodId } ?: defaultMix
 
     // Fork: no vertical scrolling on this tab — the page fits the viewport and is always at the top.
@@ -685,7 +689,7 @@ fun MyMixScreen(
                     ),
                 )
                 sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
-                startedMixId = mix.browseId
+
                 dataStoreManager.putString(MyMixPrefs.STARTED_ID, mix.browseId)
             } finally {
                 isPreparing = false
@@ -762,7 +766,7 @@ fun MyMixScreen(
                     ),
                 )
                 sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
-                startedMixId = LIKES_MOOD_ID
+
                 dataStoreManager.putString(MyMixPrefs.STARTED_ID, LIKES_MOOD_ID)
             } finally {
                 isPreparing = false
@@ -805,7 +809,7 @@ fun MyMixScreen(
                     ),
                 )
                 sharedViewModel.loadMediaItem(tracks.first(), Config.PLAYLIST_CLICK, 0)
-                startedMixId = OFFLINE_MODE_ID
+
                 dataStoreManager.putString(MyMixPrefs.STARTED_ID, OFFLINE_MODE_ID)
             } finally {
                 isPreparing = false
@@ -1107,6 +1111,15 @@ fun MyMixScreen(
             val likesPalette = MOOD_PALETTES[moodMixes.size % MOOD_PALETTES.size]
             val supermixSelected = !isLikesSelected && (offline || superMix?.browseId == selectedMix?.browseId)
             val likesSelected = isLikesSelected
+            // Fork: "Все настроения" represents shelf mixes. Selected when the started mix came from
+            // the shelf (not null, not Likes, not offline mode, and not the personal supermix).
+            // Supermix and Likes maintain priority and conditions do not overlap.
+            val allMoodsSelected = !offline &&
+                !supermixSelected &&
+                startedMixId != null &&
+                startedMixId != LIKES_MOOD_ID &&
+                startedMixId != OFFLINE_MODE_ID &&
+                startedMixId != superMix?.browseId
 
             Row(
                 // Three cards share the full width of the screen: no horizontal scrolling, so the
@@ -1135,7 +1148,7 @@ fun MyMixScreen(
                             playOffline()
                         } else {
                             superMix?.let { mix ->
-                                selectedMoodId = mix.browseId
+
                                 scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, mix.browseId) }
                                 playMix(mix)
                             } ?: playOffline()
@@ -1158,7 +1171,7 @@ fun MyMixScreen(
                     ),
                     selected = likesSelected,
                     onClick = {
-                        selectedMoodId = LIKES_MOOD_ID
+
                         scope.launch { dataStoreManager.putString(MyMixPrefs.MOOD_ID, LIKES_MOOD_ID) }
                         playLikes()
                     },
@@ -1181,7 +1194,7 @@ fun MyMixScreen(
                         letterSpacing = 0.04.em,
                         fontSize = 10.5.sp,
                     ),
-                    selected = false,
+                    selected = allMoodsSelected,
                     alpha = if (offline) 0.45f else 1f,
                     collageUrls = allMoodsCollageUrls,
                     onClick = {
